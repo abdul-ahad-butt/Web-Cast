@@ -8,6 +8,7 @@ export default function Dashboard() {
   const [ownerToken, setOwnerToken] = useState<string>("");
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [status, setStatus] = useState<string>("Not Connected");
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [mediaInfo, setMediaInfo] = useState<{filename: string, resolution: string} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -135,25 +136,64 @@ export default function Dashboard() {
       }
 
       setStatus(`Uploading ${file.name}...`);
+      setUploadProgress(1); // Trigger progress UI
       try {
         let baseUrl = import.meta.env.VITE_API_URL || "https://webcast-hub.abdulahadbutt420.workers.dev";
         if (!import.meta.env.VITE_API_URL && window.location.hostname === "localhost") baseUrl = "http://localhost:8787";
         baseUrl = baseUrl.replace(/\/$/, "");
         
-        const res = await fetch(`${baseUrl}/api/rooms/${roomId}/upload`, {
+        // 1. Start multipart upload
+        const startRes = await fetch(`${baseUrl}/api/rooms/${roomId}/upload/start`, {
           method: "POST",
-          body: file,
           headers: {
             "Content-Type": file.type,
             "Authorization": `Bearer ${ownerToken}`
           }
         });
         
-        if (!res.ok) {
-          throw new Error("Upload failed: Unauthorized");
+        if (!startRes.ok) throw new Error("Upload start failed");
+        const { uploadId, mediaId } = await startRes.json();
+
+        // 2. Upload chunks
+        const chunkSize = 50 * 1024 * 1024; // 50MB
+        const numChunks = Math.ceil(file.size / chunkSize);
+        const parts: { partNumber: number, etag: string }[] = [];
+
+        for (let i = 0; i < numChunks; i++) {
+          const start = i * chunkSize;
+          const end = Math.min(start + chunkSize, file.size);
+          const chunk = file.slice(start, end);
+          const partNumber = i + 1;
+
+          const partRes = await fetch(`${baseUrl}/api/rooms/${roomId}/upload/${uploadId}/${partNumber}?mediaId=${mediaId}`, {
+            method: "PUT",
+            body: chunk,
+            headers: {
+              "Authorization": `Bearer ${ownerToken}`
+            }
+          });
+          
+          if (!partRes.ok) throw new Error(`Upload part ${partNumber} failed`);
+          const partData = await partRes.json();
+          parts.push({ partNumber: partData.partNumber, etag: partData.etag });
+          
+          setUploadProgress(((i + 1) / numChunks) * 100);
         }
+
+        // 3. Complete multipart upload
+        const completeRes = await fetch(`${baseUrl}/api/rooms/${roomId}/upload/${uploadId}/complete?mediaId=${mediaId}`, {
+          method: "POST",
+          body: JSON.stringify({ parts }),
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${ownerToken}`
+          }
+        });
         
-        const data = await res.json();
+        if (!completeRes.ok) throw new Error("Upload complete failed");
+        const { mediaUrl } = await completeRes.json();
+        
+        setUploadProgress(0); // Hide progress UI
         
         if (!signalingRef.current || signalingRef.current.roomId !== roomId) {
           signalingRef.current?.disconnect();
@@ -163,17 +203,18 @@ export default function Dashboard() {
             setMediaInfo({ filename: file.name, resolution });
             setStatus(`Casting Local Media`);
             setIsConnected(true);
-            signaling.send({ type: "media-url", url: data.mediaUrl, filename: file.name, resolution });
+            signaling.send({ type: "media-url", url: mediaUrl, filename: file.name, resolution });
           };
           signaling.connect();
         } else {
-          signalingRef.current.send({ type: "media-url", url: data.mediaUrl, filename: file.name, resolution });
+          signalingRef.current.send({ type: "media-url", url: mediaUrl, filename: file.name, resolution });
           setMediaInfo({ filename: file.name, resolution });
           setStatus(`Casting Local Media`);
         }
       } catch (err) {
         console.error("Upload failed", err);
         setStatus("Upload failed.");
+        setUploadProgress(0);
       }
     } else {
       alert("Only video/image casting is implemented for now");
@@ -257,6 +298,22 @@ export default function Dashboard() {
       <section className="mt-16 pt-8 relative">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-px bg-linear-to-r from-transparent via-white/20 to-transparent"></div>
         <h3 className="text-xl font-semibold mb-6 tracking-wide">Active Session</h3>
+        
+        {uploadProgress > 0 && uploadProgress < 100 && (
+          <div className="mb-6 glass-card p-6 rounded-2xl">
+            <div className="flex justify-between text-sm mb-3 font-medium">
+              <span className="text-blue-400">Uploading Media...</span>
+              <span className="text-muted-foreground">{Math.round(uploadProgress)}%</span>
+            </div>
+            <div className="w-full bg-black/40 rounded-full h-3 border border-white/5 overflow-hidden">
+              <div 
+                className="bg-linear-to-r from-blue-500 to-indigo-500 h-full rounded-full transition-all duration-300 shadow-[0_0_10px_rgba(59,130,246,0.5)]" 
+                style={{ width: `${uploadProgress}%` }}
+              ></div>
+            </div>
+          </div>
+        )}
+
         <div className="glass-card p-6 md:p-8 rounded-2xl flex flex-col gap-6 relative overflow-hidden">
           {isConnected && <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-500/20 rounded-full blur-[50px] pointer-events-none"></div>}
           

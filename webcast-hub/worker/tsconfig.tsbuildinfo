@@ -1,0 +1,1 @@
+{"version":"7.0.2","root":["./durable-object.ts","./index.ts"],"packageJsons":["../node_modules/@cloudflare/workers-types/package.json","../package.json"],"missingPackageJsons":["../node_modules/@types/cloudflare__workers-types/package.json"]}
