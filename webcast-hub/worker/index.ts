@@ -9,11 +9,20 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Basic CORS headers
+    // CORS configuration
+    const allowedOrigins = [
+      "https://web-cast.pages.dev",
+      "http://localhost:5173",
+      "http://localhost:4173",
+    ];
+    const origin = request.headers.get("Origin") || "";
+    const isAllowedOrigin = allowedOrigins.includes(origin) || origin.startsWith("chrome-extension://");
+    const allowOrigin = isAllowedOrigin ? origin : "https://web-cast.pages.dev";
+
     const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin": allowOrigin,
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
     };
 
     if (request.method === "OPTIONS") {
@@ -24,7 +33,15 @@ export default {
     if (url.pathname === "/api/rooms" && request.method === "POST") {
       // Generate a simple short room ID (A-Z0-9)
       const roomId = Array.from({length: 4}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[Math.floor(Math.random() * 36)]).join('');
-      return new Response(JSON.stringify({ roomId }), {
+      
+      const id = env.CAST_ROOM.idFromName(roomId);
+      const stub = env.CAST_ROOM.get(id);
+      
+      const initReq = new Request(`${url.origin}/init`, { method: "POST" });
+      const initRes = await stub.fetch(initReq);
+      const { ownerToken } = (await initRes.json()) as { ownerToken: string };
+
+      return new Response(JSON.stringify({ roomId, ownerToken }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -33,6 +50,16 @@ export default {
     const uploadMatch = url.pathname.match(/^\/api\/rooms\/([A-Z0-9-]+)\/upload$/);
     if (uploadMatch && request.method === "POST") {
       const roomId = uploadMatch[1];
+
+      // Validate ownerToken
+      const token = request.headers.get("Authorization")?.replace("Bearer ", "");
+      if (!token) return new Response("Unauthorized: Missing token", { status: 401, headers: corsHeaders });
+      
+      const id = env.CAST_ROOM.idFromName(roomId);
+      const stub = env.CAST_ROOM.get(id);
+      const validateRes = await stub.fetch(new Request(`${url.origin}/validate-owner?token=${token}`));
+      if (!validateRes.ok) return new Response("Unauthorized: Invalid token", { status: 401, headers: corsHeaders });
+
       const mediaId = `${roomId}-${crypto.randomUUID()}`;
       
       const contentType = request.headers.get("Content-Type") || "application/octet-stream";

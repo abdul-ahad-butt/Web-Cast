@@ -24,6 +24,23 @@ export class CastRoomDurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
+    if (url.pathname.endsWith("/init") && request.method === "POST") {
+      const ownerToken = crypto.randomUUID();
+      await this.ctx.storage.put("ownerToken", ownerToken);
+      return new Response(JSON.stringify({ ownerToken }), {
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (url.pathname.endsWith("/validate-owner") && request.method === "GET") {
+      const token = url.searchParams.get("token");
+      const storedToken = await this.ctx.storage.get("ownerToken");
+      if (token && storedToken && token === storedToken) {
+        return new Response("OK");
+      }
+      return new Response("Unauthorized", { status: 401 });
+    }
+
     // Debug Route
     if (url.pathname.endsWith("/debug")) {
       return new Response(JSON.stringify({
@@ -43,6 +60,14 @@ export class CastRoomDurableObject {
     const clientType = url.searchParams.get("type") as "sender" | "receiver" | null;
     if (clientType !== "sender" && clientType !== "receiver") {
       return new Response("Invalid client type", { status: 400 });
+    }
+
+    if (clientType === "sender") {
+      const token = url.searchParams.get("token");
+      const storedToken = await this.ctx.storage.get("ownerToken");
+      if (!token || !storedToken || token !== storedToken) {
+        return new Response("Unauthorized sender", { status: 401 });
+      }
     }
 
     const { 0: client, 1: server } = new WebSocketPair();

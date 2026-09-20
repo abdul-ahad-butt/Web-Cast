@@ -1,4 +1,4 @@
-// extension/popup.ts
+// popup.ts
 document.addEventListener("DOMContentLoaded", () => {
   const roomIdInput = document.getElementById("roomIdInput");
   const btnCastTab = document.getElementById("btnCastTab");

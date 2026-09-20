@@ -5,6 +5,7 @@ import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
 
 export default function Dashboard() {
   const [roomId, setRoomId] = useState<string>("");
+  const [ownerToken, setOwnerToken] = useState<string>("");
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [status, setStatus] = useState<string>("Not Connected");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -21,6 +22,7 @@ export default function Dashboard() {
       const res = await fetch(`${baseUrl}/api/rooms`, { method: "POST" });
       const data = await res.json();
       setRoomId(data.roomId);
+      setOwnerToken(data.ownerToken);
     } catch (e) {
       console.error(e);
       setRoomId(Math.random().toString(36).substring(2, 6).toUpperCase());
@@ -52,13 +54,19 @@ export default function Dashboard() {
           method: "POST",
           body: file,
           headers: {
-            "Content-Type": file.type
+            "Content-Type": file.type,
+            "Authorization": `Bearer ${ownerToken}`
           }
         });
+        
+        if (!res.ok) {
+          throw new Error("Upload failed: Unauthorized");
+        }
+        
         const data = await res.json();
         
         if (!signalingRef.current) {
-          const signaling = new SignalingClient(roomId, "sender");
+          const signaling = new SignalingClient(roomId, "sender", ownerToken);
           signalingRef.current = signaling;
           signaling.onConnect = () => {
             setStatus(`Casting local media: ${file.name}`);

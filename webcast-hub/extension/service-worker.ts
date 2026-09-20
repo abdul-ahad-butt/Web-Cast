@@ -30,6 +30,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         target: "offscreen",
         type: "START_CAST",
         roomId: message.roomId,
+        ownerToken: message.ownerToken,
         streamId: message.streamId
       }, (response) => {
         sendResponse(response);
@@ -46,6 +47,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           target: "offscreen",
           type: "START_CAST",
           roomId: message.roomId,
+          ownerToken: message.ownerToken,
           streamId: streamId
         }, (response) => {
           sendResponse(response);

@@ -10,7 +10,7 @@ export class SignalingClient {
   public onDisconnect?: () => void;
   public onError?: (error: any) => void;
 
-  constructor(roomId: string, clientType: ClientType) {
+  constructor(roomId: string, clientType: ClientType, token?: string) {
     this.clientType = clientType;
     let baseUrl = "wss://webcast-hub.abdulahadbutt420.workers.dev";
     
@@ -33,6 +33,9 @@ export class SignalingClient {
     // Remove trailing slash if present
     baseUrl = baseUrl.replace(/\/$/, "");
     this.url = `${baseUrl}/api/rooms/${roomId}/ws?type=${clientType}`;
+    if (token) {
+      this.url += `&token=${token}`;
+    }
   }
 
   connect() {

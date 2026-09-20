@@ -9,7 +9,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== "offscreen") return false;
 
   if (message.type === "START_CAST") {
-    startCast(message.roomId, message.streamId).then(() => {
+    startCast(message.roomId, message.ownerToken, message.streamId).then(() => {
       sendResponse({ success: true });
     }).catch((err) => {
       console.error(err);
@@ -24,7 +24,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-async function startCast(roomId: string, streamId: string) {
+async function startCast(roomId: string, ownerToken: string, streamId: string) {
   if (signaling) stopCast();
   
   // In offscreen doc, we can use getUserMedia with the streamId
@@ -43,7 +43,7 @@ async function startCast(roomId: string, streamId: string) {
     } as any
   });
 
-  signaling = new SignalingClient(roomId, "sender");
+  signaling = new SignalingClient(roomId, "sender", ownerToken);
   peerConnection = new WebRTCPeerConnection(signaling);
 
   currentStream.getTracks().forEach(track => {

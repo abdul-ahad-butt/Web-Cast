@@ -1,4 +1,4 @@
-// extension/service-worker.ts
+// service-worker.ts
 async function setupOffscreenDocument(path) {
   const existingContexts = await chrome.runtime.getContexts({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
@@ -18,6 +18,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         target: "offscreen",
         type: "START_CAST",
         roomId: message.roomId,
+        ownerToken: message.ownerToken,
         streamId: message.streamId
       }, (response) => {
         sendResponse(response);
@@ -32,6 +33,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           target: "offscreen",
           type: "START_CAST",
           roomId: message.roomId,
+          ownerToken: message.ownerToken,
           streamId
         }, (response) => {
           sendResponse(response);

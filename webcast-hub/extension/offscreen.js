@@ -1,7 +1,7 @@
 // <define:import.meta.env>
 var define_import_meta_env_default = {};
 
-// src/webrtc/SignalingClient.ts
+// ../src/webrtc/SignalingClient.ts
 var SignalingClient = class {
   ws = null;
   url;
@@ -10,19 +10,27 @@ var SignalingClient = class {
   onConnect;
   onDisconnect;
   onError;
-  constructor(roomId, clientType) {
+  constructor(roomId, clientType, token) {
     this.clientType = clientType;
-    let baseUrl = "wss://webcast-hub-api.abdulahadbutt420.workers.dev";
+    let baseUrl = "wss://webcast-hub.abdulahadbutt420.workers.dev";
     try {
-      if (typeof import.meta !== "undefined" && define_import_meta_env_default && void 0) {
-        baseUrl = void 0;
-      } else if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      if (typeof import.meta !== "undefined" && define_import_meta_env_default) {
+        if (void 0) {
+          baseUrl = void 0;
+        } else if (define_import_meta_env_default.VITE_API_URL) {
+          baseUrl = define_import_meta_env_default.VITE_API_URL.replace("https://", "wss://").replace("http://", "ws://");
+        }
+      }
+      if (typeof window !== "undefined" && window.location.hostname === "localhost" && true && !define_import_meta_env_default?.VITE_API_URL) {
         baseUrl = "ws://localhost:8787";
       }
     } catch (e) {
     }
     baseUrl = baseUrl.replace(/\/$/, "");
     this.url = `${baseUrl}/api/rooms/${roomId}/ws?type=${clientType}`;
+    if (token) {
+      this.url += `&token=${token}`;
+    }
   }
   connect() {
     this.ws = new WebSocket(this.url);
@@ -64,7 +72,7 @@ var SignalingClient = class {
   }
 };
 
-// src/webrtc/WebRTCPeerConnection.ts
+// ../src/webrtc/WebRTCPeerConnection.ts
 var WebRTCPeerConnection = class {
   pc;
   signaling;
@@ -149,14 +157,14 @@ var WebRTCPeerConnection = class {
   }
 };
 
-// extension/offscreen.ts
+// offscreen.ts
 var signaling = null;
 var peerConnection = null;
 var currentStream = null;
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== "offscreen") return false;
   if (message.type === "START_CAST") {
-    startCast(message.roomId, message.streamId).then(() => {
+    startCast(message.roomId, message.ownerToken, message.streamId).then(() => {
       sendResponse({ success: true });
     }).catch((err) => {
       console.error(err);
@@ -169,7 +177,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true });
   }
 });
-async function startCast(roomId, streamId) {
+async function startCast(roomId, ownerToken, streamId) {
   if (signaling) stopCast();
   currentStream = await navigator.mediaDevices.getUserMedia({
     audio: {
@@ -185,7 +193,7 @@ async function startCast(roomId, streamId) {
       }
     }
   });
-  signaling = new SignalingClient(roomId, "sender");
+  signaling = new SignalingClient(roomId, "sender", ownerToken);
   peerConnection = new WebRTCPeerConnection(signaling);
   currentStream.getTracks().forEach((track) => {
     peerConnection?.addTrack(track, currentStream);
