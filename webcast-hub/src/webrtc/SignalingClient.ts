@@ -16,12 +16,15 @@ export class SignalingClient {
   private url: string;
   private clientType: ClientType;
   
+  public roomId: string;
+  
   public onMessage?: (data: SignalingMessage) => void;
   public onConnect?: () => void;
   public onDisconnect?: () => void;
   public onError?: (error: any) => void;
 
   constructor(roomId: string, clientType: ClientType, token?: string) {
+    this.roomId = roomId;
     this.clientType = clientType;
     let baseUrl = "wss://webcast-hub.abdulahadbutt420.workers.dev";
     

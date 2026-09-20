@@ -24,6 +24,22 @@ export default function Dashboard() {
       const data = await res.json();
       setRoomId(data.roomId);
       setOwnerToken(data.ownerToken);
+      
+      // Connect to signaling immediately so the receiver sees the sender is ready
+      if (signalingRef.current) {
+        signalingRef.current.disconnect();
+      }
+      const signaling = new SignalingClient(data.roomId, "sender", data.ownerToken);
+      signalingRef.current = signaling;
+      signaling.onConnect = () => {
+        setStatus("Room Ready");
+        setIsConnected(true);
+      };
+      signaling.onDisconnect = () => {
+        setIsConnected(false);
+        setStatus("Not Connected");
+      };
+      signaling.connect();
     } catch (e) {
       console.error(e);
       setRoomId(Math.random().toString(36).substring(2, 6).toUpperCase());
@@ -44,7 +60,8 @@ export default function Dashboard() {
       
       setStatus("Starting screen cast...");
       
-      if (!signalingRef.current) {
+      if (!signalingRef.current || signalingRef.current.roomId !== roomId) {
+        signalingRef.current?.disconnect();
         signalingRef.current = new SignalingClient(roomId, "sender", ownerToken);
       }
       if (!pcRef.current) {
@@ -138,7 +155,8 @@ export default function Dashboard() {
         
         const data = await res.json();
         
-        if (!signalingRef.current) {
+        if (!signalingRef.current || signalingRef.current.roomId !== roomId) {
+          signalingRef.current?.disconnect();
           const signaling = new SignalingClient(roomId, "sender", ownerToken);
           signalingRef.current = signaling;
           signaling.onConnect = () => {
@@ -190,7 +208,7 @@ export default function Dashboard() {
 
       <div className="mb-10 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
         <div className="relative group">
-          <div className="absolute -inset-0.5 bg-linear-to-r from-blue-500 to-indigo-500 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-500"></div>
+          <div className="absolute -inset-0.5 bg-linear-to-r from-blue-500 to-indigo-500 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-500 pointer-events-none"></div>
           <input 
             type="text" 
             placeholder="Enter Room Code" 
