@@ -201,7 +201,7 @@ export default function Dashboard() {
         
         setUploadProgress(0); // Hide progress UI
         
-        if (!signalingRef.current || signalingRef.current.roomId !== roomId) {
+        if (!signalingRef.current || signalingRef.current.roomId !== roomId || !signalingRef.current.isOpen()) {
           signalingRef.current?.disconnect();
           const signaling = new SignalingClient(roomId, "sender", ownerToken);
           signalingRef.current = signaling;

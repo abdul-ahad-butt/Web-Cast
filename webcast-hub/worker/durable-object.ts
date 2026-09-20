@@ -6,6 +6,8 @@ export class CastRoomDurableObject {
   sessions: Map<WebSocket, { type: "sender" | "receiver" }>;
   mediaState: {
     url: string | null;
+    filename?: string;
+    resolution?: string;
     playing: boolean;
     currentTime: number;
   };
@@ -80,9 +82,22 @@ export class CastRoomDurableObject {
       type: clientType === "sender" ? "sender-joined" : "receiver-joined"
     }), server);
 
+    // If a receiver joins, notify them if a sender is already present
+    if (clientType === "receiver") {
+      const hasSender = Array.from(this.sessions.values()).some(s => s.type === "sender");
+      if (hasSender) {
+        server.send(JSON.stringify({ type: "sender-joined" }));
+      }
+    }
+
     // If a receiver joins, send them the current media state if available
     if (clientType === "receiver" && this.mediaState.url) {
-      server.send(JSON.stringify({ type: "media-url", url: this.mediaState.url }));
+      server.send(JSON.stringify({ 
+        type: "media-url", 
+        url: this.mediaState.url,
+        filename: this.mediaState.filename,
+        resolution: this.mediaState.resolution
+      }));
       if (this.mediaState.playing) {
         server.send(JSON.stringify({ type: "media-play" }));
       }
@@ -106,6 +121,8 @@ export class CastRoomDurableObject {
       // Handle media state synchronization
       if (msg.type === "media-url") {
         this.mediaState.url = msg.url;
+        this.mediaState.filename = msg.filename;
+        this.mediaState.resolution = msg.resolution;
         this.mediaState.playing = true;
         this.mediaState.currentTime = 0;
       } else if (msg.type === "media-play") {
@@ -155,7 +172,7 @@ export class CastRoomDurableObject {
       
       // If sender disconnects, clear media state
       if (session.type === "sender") {
-        this.mediaState = { url: null, playing: false, currentTime: 0 };
+        this.mediaState = { url: null, filename: undefined, resolution: undefined, playing: false, currentTime: 0 };
       }
     }
   }
