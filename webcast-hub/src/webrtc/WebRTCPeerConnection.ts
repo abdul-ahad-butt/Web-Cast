@@ -100,6 +100,11 @@ export class WebRTCPeerConnection {
   }
 
   close() {
+    this.pc.getSenders().forEach((sender) => {
+      if (sender.track) {
+        sender.track.stop();
+      }
+    });
     this.pc.close();
   }
 }

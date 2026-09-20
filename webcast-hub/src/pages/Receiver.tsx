@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { SignalingClient } from "../webrtc/SignalingClient";
 import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
 
 export default function Receiver() {
   const { roomId } = useParams();
+  const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement>(null);
+  
+  const [inputCode, setInputCode] = useState("");
   
   const [status, setStatus] = useState<string>("Initializing...");
   const [hasMedia, setHasMedia] = useState<boolean>(false);
@@ -114,19 +117,32 @@ export default function Receiver() {
           <div className="glass-card rounded-3xl p-10 max-w-md w-full relative overflow-hidden group hover:shadow-[0_0_40px_rgba(99,102,241,0.2)] transition-shadow duration-500 border border-white/10">
             <div className="absolute -inset-1 bg-linear-to-r from-blue-500/0 via-indigo-500/10 to-purple-500/0 opacity-0 group-hover:opacity-100 transition-opacity duration-1000"></div>
             
-            <p className="text-sm text-muted-foreground/60 uppercase tracking-[0.3em] font-semibold mb-6 relative z-10">Your Room Code</p>
+            <p className="text-sm text-muted-foreground/60 uppercase tracking-[0.3em] font-semibold mb-6 relative z-10">Enter Room Code</p>
             
-            <div className="relative inline-block mb-8 z-10">
+            <div className="relative inline-block mb-8 z-10 w-full">
               <div className="absolute inset-0 bg-blue-500/20 blur-2xl rounded-full"></div>
-              <div className="text-6xl md:text-7xl font-mono tracking-[0.2em] text-white font-bold drop-shadow-[0_0_15px_rgba(255,255,255,0.3)]">
-                {/* Normally we might display a generated code here, but currently receiver takes it from URL */}
-                <span className="opacity-50">...</span>
-              </div>
+              <input 
+                type="text" 
+                value={inputCode}
+                onChange={(e) => setInputCode(e.target.value.toUpperCase())}
+                placeholder="e.g. ABCD"
+                maxLength={4}
+                className="w-full bg-black/40 border border-white/20 text-white text-4xl md:text-5xl text-center font-mono tracking-[0.2em] rounded-2xl py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all uppercase placeholder:opacity-30"
+              />
             </div>
             
-            <p className="text-muted-foreground/80 font-light text-lg relative z-10">
-              Enter a Room Code in the URL to join.
-            </p>
+            <button 
+              onClick={() => {
+                const code = inputCode.trim().toUpperCase();
+                if (code.length === 4) {
+                  navigate(`/receiver/${code}`);
+                }
+              }}
+              disabled={inputCode.length !== 4}
+              className="relative z-10 w-full bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold tracking-wider uppercase py-4 rounded-xl shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Connect
+            </button>
           </div>
         </div>
       )}

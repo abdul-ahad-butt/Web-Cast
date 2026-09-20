@@ -30,6 +30,49 @@ export default function Dashboard() {
   };
 
 
+  const handleCastChromeTab = async () => {
+    if (!roomId) {
+      alert("Please generate or enter a room ID first");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
+      
+      setStatus("Starting screen cast...");
+      
+      if (!signalingRef.current) {
+        signalingRef.current = new SignalingClient(roomId, "sender", ownerToken);
+      }
+      if (!pcRef.current) {
+        pcRef.current = new WebRTCPeerConnection(signalingRef.current);
+      }
+      
+      stream.getTracks().forEach((track) => {
+        pcRef.current?.addTrack(track, stream);
+      });
+      
+      signalingRef.current.onConnect = async () => {
+        setStatus("Casting screen...");
+        setIsConnected(true);
+        await pcRef.current?.createOffer();
+      };
+      
+      signalingRef.current.connect();
+      
+      // Handle the user clicking "Stop sharing" in the browser UI
+      stream.getVideoTracks()[0].onended = () => {
+        stopCasting();
+      };
+      
+    } catch (err) {
+      console.error("Screen capture failed", err);
+      setStatus("Screen capture cancelled or failed.");
+    }
+  };
+
   const handleCastLocalMedia = () => {
     fileInputRef.current?.click();
   };
@@ -135,12 +178,12 @@ export default function Dashboard() {
       <video ref={videoRef} className="hidden" controls muted />
 
       <main className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-        <div className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-blue-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
+        <div onClick={handleCastChromeTab} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-blue-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
           <div className="w-14 h-14 bg-linear-to-br from-blue-500/20 to-purple-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(59,130,246,0.3)] transition-all">
             <MonitorUp className="w-7 h-7 text-blue-400 group-hover:text-blue-300" />
           </div>
-          <h2 className="text-2xl font-semibold mb-3 tracking-wide">Cast Chrome Tab</h2>
-          <p className="text-muted-foreground/80 leading-relaxed font-light">Use the Chrome Extension to instantly cast your browser tab.</p>
+          <h2 className="text-2xl font-semibold mb-3 tracking-wide">Cast Screen / Tab</h2>
+          <p className="text-muted-foreground/80 leading-relaxed font-light">Instantly cast your browser tab or entire screen directly from the web.</p>
         </div>
 
         <div onClick={handleCastLocalMedia} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-indigo-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">

@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy-worker": "wrangler deploy",
+    "deploy-frontend": "npm run build && wrangler pages deploy dist/client --project-name web-cast",
+    "deploy": "npm run deploy-worker && npm run deploy-frontend"
   },
   "dependencies": {
     "lucide-react": "^1.47.0",
