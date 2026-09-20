@@ -296,14 +296,14 @@ export default function Receiver() {
             <p className="text-sm text-muted-foreground/60 uppercase tracking-[0.3em] font-semibold mb-6 relative z-10">Enter Room Code</p>
             
             <div className="relative inline-block mb-8 z-10 w-full">
-              <div className="absolute inset-0 bg-blue-500/20 blur-2xl rounded-full"></div>
+              <div className="absolute inset-0 bg-blue-500/20 blur-2xl rounded-full pointer-events-none"></div>
               <input 
                 type="text" 
                 value={inputCode}
                 onChange={(e) => setInputCode(e.target.value.toUpperCase())}
                 placeholder="e.g. ABCD"
                 maxLength={4}
-                className="w-full bg-black/40 border border-white/20 text-white text-4xl md:text-5xl text-center font-mono tracking-[0.2em] rounded-2xl py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all uppercase placeholder:opacity-30"
+                className="relative z-10 w-full bg-black/40 border border-white/20 text-white text-4xl md:text-5xl text-center font-mono tracking-[0.2em] rounded-2xl py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all uppercase placeholder:opacity-30"
               />
             </div>
             
