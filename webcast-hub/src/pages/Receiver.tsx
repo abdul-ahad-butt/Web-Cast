@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Play, Pause, Volume2, VolumeX, Maximize, Settings, Loader2 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { SignalingClient } from "../webrtc/SignalingClient";
 import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
@@ -13,6 +14,72 @@ export default function Receiver() {
   const [status, setStatus] = useState<string>("Initializing...");
   const [hasMedia, setHasMedia] = useState<boolean>(false);
   const [senderConnected, setSenderConnected] = useState<boolean>(false);
+  
+  // Custom Player States
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
+  const [mediaInfo, setMediaInfo] = useState<{filename?: string, resolution?: string} | null>(null);
+  const [webrtcState, setWebrtcState] = useState<string>("");
+  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const formatTime = (time: number) => {
+    if (isNaN(time)) return "00:00";
+    const minutes = Math.floor(time / 60);
+    const seconds = Math.floor(time % 60);
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  const handleMouseMove = () => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
+  };
+
+  const togglePlay = () => {
+    if (videoRef.current) {
+      if (videoRef.current.paused) videoRef.current.play();
+      else videoRef.current.pause();
+    }
+  };
+
+  const toggleMute = () => {
+    if (videoRef.current) {
+      videoRef.current.muted = !videoRef.current.muted;
+      setIsMuted(videoRef.current.muted);
+    }
+  };
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    setVolume(val);
+    if (videoRef.current) {
+      videoRef.current.volume = val;
+      if (val > 0) setIsMuted(false);
+    }
+  };
+
+  const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    if (videoRef.current) {
+      const newTime = (val / 100) * duration;
+      videoRef.current.currentTime = newTime;
+    }
+  };
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(console.error);
+    } else {
+      document.exitFullscreen();
+    }
+  };
 
   useEffect(() => {
     if (!roomId) return;
@@ -40,6 +107,7 @@ export default function Receiver() {
           videoRef.current.srcObject = null;
           videoRef.current.src = msg.url;
           setHasMedia(true);
+          setMediaInfo({ filename: msg.filename, resolution: msg.resolution });
           setStatus("");
         }
       } else if (msg.type === "media-play") {
@@ -57,6 +125,7 @@ export default function Receiver() {
         if (videoRef.current.srcObject !== streams[0]) {
           videoRef.current.srcObject = streams[0];
           setHasMedia(true);
+          setMediaInfo({ resolution: "Live Stream" });
           setStatus("");
         }
       }
@@ -64,9 +133,12 @@ export default function Receiver() {
 
     peer.onConnectionStateChange = (state) => {
       console.log("WebRTC state:", state);
+      setWebrtcState(state);
       if (state === "disconnected" || state === "failed") {
-        setHasMedia(false);
-        setStatus("Stream disconnected");
+        // Do not immediately hide media, just show reconnecting
+        setStatus("Stream disconnected / Reconnecting...");
+      } else if (state === "connected") {
+        setStatus("");
       }
     };
 
@@ -86,11 +158,115 @@ export default function Receiver() {
 
       {roomId ? (
         <>
-          <video 
-            ref={videoRef}
-            autoPlay 
-            className={`w-full h-full absolute inset-0 object-contain z-20 ${hasMedia ? 'opacity-100' : 'opacity-0'} transition-opacity duration-700`}
-          />
+          <div 
+            className={`absolute inset-0 z-20 ${hasMedia ? 'opacity-100' : 'opacity-0'} transition-opacity duration-700 bg-black flex items-center justify-center`}
+            onMouseMove={handleMouseMove}
+            onMouseLeave={() => setShowControls(false)}
+          >
+            <video 
+              ref={videoRef}
+              autoPlay 
+              className="w-full h-full object-contain"
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onTimeUpdate={() => {
+                if (videoRef.current) {
+                  setCurrentTime(videoRef.current.currentTime);
+                  setProgress((videoRef.current.currentTime / duration) * 100);
+                }
+              }}
+              onLoadedMetadata={() => {
+                if (videoRef.current) setDuration(videoRef.current.duration);
+              }}
+              onWaiting={() => setIsBuffering(true)}
+              onPlaying={() => setIsBuffering(false)}
+              onCanPlay={() => setIsBuffering(false)}
+            />
+
+            {/* Loading/Buffering State */}
+            {isBuffering && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-30 pointer-events-none">
+                <Loader2 className="w-16 h-16 text-blue-500 animate-spin" />
+              </div>
+            )}
+            
+            {/* Reconnecting UI */}
+            {(webrtcState === "disconnected" || webrtcState === "failed") && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-30 pointer-events-none backdrop-blur-sm">
+                <div className="glass-card p-8 rounded-2xl flex flex-col items-center gap-4">
+                  <Loader2 className="w-12 h-12 text-red-500 animate-spin" />
+                  <p className="text-xl font-semibold tracking-wide">Connection lost. Reconnecting...</p>
+                </div>
+              </div>
+            )}
+
+            {/* Custom Controls Overlay */}
+            <div className={`absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black/80 via-black/40 to-transparent transition-opacity duration-300 z-40 ${showControls ? 'opacity-100' : 'opacity-0'}`}>
+              {mediaInfo?.filename && (
+                <div className="mb-4 text-white/90 font-medium tracking-wide drop-shadow-md">
+                  {mediaInfo.filename}
+                </div>
+              )}
+              
+              <div className="flex flex-col gap-3">
+                {/* Progress Bar */}
+                <div className="flex items-center gap-3 w-full">
+                  <span className="text-xs font-mono">{formatTime(currentTime)}</span>
+                  <input 
+                    type="range" 
+                    min="0" max="100" 
+                    value={isNaN(progress) ? 0 : progress}
+                    onChange={handleProgressChange}
+                    className="w-full h-1.5 bg-white/20 rounded-lg appearance-none cursor-pointer accent-blue-500 hover:h-2 transition-all"
+                  />
+                  <span className="text-xs font-mono">{formatTime(duration)}</span>
+                </div>
+
+                {/* Main Controls */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-6">
+                    <button onClick={togglePlay} className="hover:text-blue-400 transition-colors">
+                      {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current" />}
+                    </button>
+                    
+                    <div className="flex items-center gap-2 group">
+                      <button onClick={toggleMute} className="hover:text-blue-400 transition-colors">
+                        {isMuted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                      </button>
+                      <input 
+                        type="range" min="0" max="1" step="0.05"
+                        value={isMuted ? 0 : volume}
+                        onChange={handleVolumeChange}
+                        className="w-24 h-1.5 bg-white/20 rounded-lg appearance-none cursor-pointer accent-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center gap-6">
+                    {/* Quality Selector */}
+                    <div className="relative">
+                      <button onClick={() => setShowSettings(!showSettings)} className="hover:text-blue-400 transition-colors">
+                        <Settings className="w-5 h-5" />
+                      </button>
+                      {showSettings && (
+                        <div className="absolute bottom-full right-0 mb-4 bg-black/90 border border-white/10 rounded-lg p-2 min-w-[150px] shadow-2xl backdrop-blur-md">
+                          <p className="text-xs text-muted-foreground uppercase tracking-widest font-semibold px-3 py-2 border-b border-white/10 mb-1">Quality</p>
+                          <button className="w-full text-left px-3 py-2 hover:bg-white/10 rounded-md text-sm flex items-center justify-between text-blue-400 font-medium">
+                            {mediaInfo?.resolution || "Auto"}
+                            <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <button onClick={toggleFullscreen} className="hover:text-blue-400 transition-colors">
+                      <Maximize className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
           
           {!hasMedia && (
             <div className="z-30 text-center animate-float glass-card p-12 rounded-3xl border border-white/10 shadow-[0_0_50px_rgba(0,0,0,0.5)]">

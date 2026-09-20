@@ -8,6 +8,7 @@ export default function Dashboard() {
   const [ownerToken, setOwnerToken] = useState<string>("");
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [status, setStatus] = useState<string>("Not Connected");
+  const [mediaInfo, setMediaInfo] = useState<{filename: string, resolution: string} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const signalingRef = useRef<SignalingClient | null>(null);
@@ -87,6 +88,35 @@ export default function Dashboard() {
     }
 
     if (file.type.startsWith("video/") || file.type.startsWith("image/")) {
+      setStatus(`Processing ${file.name}...`);
+      
+      let resolution = "Original";
+      if (file.type.startsWith("video/")) {
+        try {
+          const url = URL.createObjectURL(file);
+          const tempVideo = document.createElement("video");
+          tempVideo.src = url;
+          await new Promise((resolve) => {
+            tempVideo.onloadedmetadata = () => {
+              const height = tempVideo.videoHeight;
+              if (height >= 2160) resolution = "4K";
+              else if (height >= 1440) resolution = "2K";
+              else if (height >= 1080) resolution = "1080p";
+              else if (height >= 720) resolution = "720p";
+              else resolution = `${tempVideo.videoWidth}x${height}`;
+              URL.revokeObjectURL(url);
+              resolve(null);
+            };
+            tempVideo.onerror = () => {
+              URL.revokeObjectURL(url);
+              resolve(null);
+            };
+          });
+        } catch (e) {
+          console.error("Failed to detect resolution", e);
+        }
+      }
+
       setStatus(`Uploading ${file.name}...`);
       try {
         let baseUrl = import.meta.env.VITE_API_URL || "https://webcast-hub.abdulahadbutt420.workers.dev";
@@ -112,14 +142,16 @@ export default function Dashboard() {
           const signaling = new SignalingClient(roomId, "sender", ownerToken);
           signalingRef.current = signaling;
           signaling.onConnect = () => {
-            setStatus(`Casting local media: ${file.name}`);
+            setMediaInfo({ filename: file.name, resolution });
+            setStatus(`Casting Local Media`);
             setIsConnected(true);
-            signaling.send({ type: "media-url", url: data.mediaUrl });
+            signaling.send({ type: "media-url", url: data.mediaUrl, filename: file.name, resolution });
           };
           signaling.connect();
         } else {
-          signalingRef.current.send({ type: "media-url", url: data.mediaUrl });
-          setStatus(`Casting local media: ${file.name}`);
+          signalingRef.current.send({ type: "media-url", url: data.mediaUrl, filename: file.name, resolution });
+          setMediaInfo({ filename: file.name, resolution });
+          setStatus(`Casting Local Media`);
         }
       } catch (err) {
         console.error("Upload failed", err);
@@ -139,6 +171,7 @@ export default function Dashboard() {
     }
     setIsConnected(false);
     setStatus("Not Connected");
+    setMediaInfo(null);
   };
 
   return (
@@ -217,7 +250,11 @@ export default function Dashboard() {
               </div>
               <div>
                 <p className="font-semibold text-lg">{status}</p>
-                <p className="text-muted-foreground font-light">{isConnected ? `Streaming to Room: ${roomId}` : 'No active casting room'}</p>
+                <p className="text-muted-foreground font-light">
+                  {isConnected ? (
+                    mediaInfo ? `Playing: ${mediaInfo.filename} (${mediaInfo.resolution})` : `Streaming to Room: ${roomId}`
+                  ) : 'No active casting room'}
+                </p>
               </div>
             </div>
             <button 

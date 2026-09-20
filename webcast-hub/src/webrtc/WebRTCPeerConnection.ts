@@ -36,6 +36,13 @@ export class WebRTCPeerConnection {
       this.onConnectionStateChange?.(this.pc.connectionState);
     };
 
+    this.pc.oniceconnectionstatechange = () => {
+      // Sometimes ICE connection state detects drops faster than connection state
+      if (this.pc.iceConnectionState === "disconnected" || this.pc.iceConnectionState === "failed") {
+        this.onConnectionStateChange?.("disconnected");
+      }
+    };
+
     // Handle incoming signaling messages
     const existingOnMessage = this.signaling.onMessage;
     this.signaling.onMessage = async (msg) => {

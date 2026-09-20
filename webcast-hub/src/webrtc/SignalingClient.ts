@@ -1,11 +1,22 @@
 export type ClientType = "sender" | "receiver";
 
+export type SignalingMessage = 
+  | { type: "media-url"; url: string; filename?: string; resolution?: string }
+  | { type: "media-play" }
+  | { type: "media-pause" }
+  | { type: "media-seek"; time: number }
+  | { type: "sender-joined" }
+  | { type: "sender-disconnected" }
+  | { type: "webrtc-offer"; offer: any }
+  | { type: "webrtc-answer"; answer: any }
+  | { type: "webrtc-candidate"; candidate: any };
+
 export class SignalingClient {
   private ws: WebSocket | null = null;
   private url: string;
   private clientType: ClientType;
   
-  public onMessage?: (data: any) => void;
+  public onMessage?: (data: SignalingMessage) => void;
   public onConnect?: () => void;
   public onDisconnect?: () => void;
   public onError?: (error: any) => void;
@@ -68,7 +79,7 @@ export class SignalingClient {
     };
   }
 
-  send(data: any) {
+  send(data: SignalingMessage) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
     } else {
