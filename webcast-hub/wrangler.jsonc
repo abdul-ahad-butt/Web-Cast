@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "webcast-hub",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-18",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "not_found_handling": "single-page-application"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CAST_ROOM",
+        "class_name": "CastRoomDurableObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["CastRoomDurableObject"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LOCAL_MEDIA_BUCKET",
+      "bucket_name": "webcast-media"
+    }
+  ]
+}

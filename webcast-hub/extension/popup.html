@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WebCast Hub</title>
+  <style>
+    body {
+      width: 300px;
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #09090b;
+      color: #fafafa;
+    }
+    h1 {
+      font-size: 1.25rem;
+      margin-top: 0;
+      margin-bottom: 16px;
+      text-align: center;
+      font-weight: 600;
+    }
+    .room-input {
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 16px;
+      background: #27272a;
+      border: 1px solid #3f3f46;
+      color: white;
+      border-radius: 6px;
+      box-sizing: border-box;
+      text-align: center;
+      font-family: monospace;
+      font-size: 1.1rem;
+      letter-spacing: 2px;
+    }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      background: #fafafa;
+      color: #18181b;
+      border: none;
+      border-radius: 6px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-bottom: 8px;
+      transition: opacity 0.2s;
+    }
+    .btn:hover {
+      opacity: 0.9;
+    }
+    .btn-danger {
+      background: #7f1d1d;
+      color: white;
+    }
+    .status {
+      font-size: 0.85rem;
+      color: #a1a1aa;
+      text-align: center;
+      margin-top: 12px;
+    }
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>WEBCAST HUB</h1>
+  
+  <div id="setupView">
+    <input type="text" id="roomIdInput" class="room-input" placeholder="ROOM CODE" />
+    <button id="btnCastTab" class="btn">Cast This Tab</button>
+    <button id="btnCastScreen" class="btn">Cast Screen</button>
+  </div>
+
+  <div id="activeView" class="hidden">
+    <p style="text-align: center; margin-bottom: 16px;">
+      Casting to Room: <strong id="activeRoomCode">...</strong>
+    </p>
+    <button id="btnStopCast" class="btn btn-danger">Stop Casting</button>
+  </div>
+
+  <div id="status" class="status">Ready to cast</div>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

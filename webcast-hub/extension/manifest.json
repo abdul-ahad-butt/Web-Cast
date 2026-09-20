@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "WebCast Hub Sender",
+  "version": "1.0.0",
+  "description": "Companion extension for WebCast Hub to cast Chrome tabs and local media.",
+  "permissions": [
+    "tabCapture",
+    "desktopCapture",
+    "activeTab",
+    "scripting",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "WebCast Hub"
+  }
+}

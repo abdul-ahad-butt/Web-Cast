@@ -1,0 +1,20 @@
+name = "webcast-hub-api"
+main = "worker/index.ts"
+compatibility_date = "2024-03-20"
+
+# Bind a Durable Object to coordinate casting rooms
+[[durable_objects.bindings]]
+name = "CAST_ROOM"
+class_name = "CastRoomDurableObject"
+
+# Required for initial Durable Object creation
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CastRoomDurableObject"]
+
+# Allow frontend origin to access the API (CORS)
+# We will handle CORS in the worker itself, but this is standard.
+
+[[r2_buckets]]
+binding = "LOCAL_MEDIA_BUCKET"
+bucket_name = "webcast-media"
