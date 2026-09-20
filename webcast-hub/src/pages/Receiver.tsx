@@ -95,7 +95,7 @@ export default function Receiver() {
                 <div className="absolute inset-0 border-4 border-t-blue-500 border-r-indigo-500 border-b-transparent border-l-transparent rounded-full animate-spin"></div>
                 <div className="absolute inset-2 border-4 border-t-transparent border-r-transparent border-b-purple-500 border-l-pink-500 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }}></div>
               </div>
-              <h1 className="text-3xl font-bold tracking-[0.2em] uppercase bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-400">{status}</h1>
+              <h1 className="text-3xl font-bold tracking-[0.2em] uppercase bg-clip-text text-transparent bg-linear-to-r from-blue-400 to-indigo-400">{status}</h1>
               <p className="text-muted-foreground/80 mt-4 text-lg font-light">Room Code: <strong className="text-white tracking-widest">{roomId}</strong></p>
               <div className="mt-6 inline-flex items-center gap-3 bg-black/40 px-6 py-3 rounded-full border border-white/5">
                 <div className={`w-3 h-3 rounded-full ${senderConnected ? 'bg-emerald-400 animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.8)]' : 'bg-red-500'}`}></div>
@@ -106,13 +106,13 @@ export default function Receiver() {
         </>
       ) : (
         <div className="text-center z-10 animate-float">
-          <h1 className="text-5xl md:text-6xl font-bold tracking-tight mb-4 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-indigo-500 to-purple-500 pb-2">
+          <h1 className="text-5xl md:text-6xl font-bold tracking-tight mb-4 bg-clip-text text-transparent bg-linear-to-r from-blue-400 via-indigo-500 to-purple-500 pb-2">
             WEBCAST HUB
           </h1>
           <p className="text-2xl text-muted-foreground/80 font-light mb-12 tracking-wide">Ready to receive</p>
           
           <div className="glass-card rounded-3xl p-10 max-w-md w-full relative overflow-hidden group hover:shadow-[0_0_40px_rgba(99,102,241,0.2)] transition-shadow duration-500 border border-white/10">
-            <div className="absolute -inset-1 bg-gradient-to-r from-blue-500/0 via-indigo-500/10 to-purple-500/0 opacity-0 group-hover:opacity-100 transition-opacity duration-1000"></div>
+            <div className="absolute -inset-1 bg-linear-to-r from-blue-500/0 via-indigo-500/10 to-purple-500/0 opacity-0 group-hover:opacity-100 transition-opacity duration-1000"></div>
             
             <p className="text-sm text-muted-foreground/60 uppercase tracking-[0.3em] font-semibold mb-6 relative z-10">Your Room Code</p>
             

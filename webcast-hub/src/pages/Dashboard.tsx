@@ -102,7 +102,7 @@ export default function Dashboard() {
     <div className="min-h-screen text-foreground flex flex-col p-8 md:p-12 max-w-7xl mx-auto">
       <header className="mb-12 flex justify-between items-center animate-float">
         <div>
-          <h1 className="text-4xl md:text-5xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-500 pb-1">
+          <h1 className="text-4xl md:text-5xl font-bold tracking-tight bg-clip-text text-transparent bg-linear-to-r from-blue-400 to-indigo-500 pb-1">
             WEBCAST HUB
           </h1>
           <p className="text-muted-foreground mt-2 text-lg font-light">Cast anything to your screen, instantly.</p>
@@ -114,13 +114,13 @@ export default function Dashboard() {
 
       <div className="mb-10 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
         <div className="relative group">
-          <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-500"></div>
+          <div className="absolute -inset-0.5 bg-linear-to-r from-blue-500 to-indigo-500 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-500"></div>
           <input 
             type="text" 
             placeholder="Enter Room Code" 
             value={roomId}
             onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-            className="relative bg-black/50 text-foreground border border-white/10 rounded-lg px-6 py-3 uppercase font-mono tracking-[0.3em] text-lg outline-none focus:border-blue-500/50 transition-colors placeholder:text-muted-foreground/50 w-full sm:w-auto text-center"
+            className="relative bg-black/50 text-foreground border border-white/10 rounded-lg px-6 py-3 uppercase font-mono tracking-[0.3em] text-lg outline-none transition-colors w-full sm:w-auto text-center"
           />
         </div>
         <button 
@@ -136,7 +136,7 @@ export default function Dashboard() {
 
       <main className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
         <div className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-blue-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
-          <div className="w-14 h-14 bg-gradient-to-br from-blue-500/20 to-purple-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(59,130,246,0.3)] transition-all">
+          <div className="w-14 h-14 bg-linear-to-br from-blue-500/20 to-purple-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(59,130,246,0.3)] transition-all">
             <MonitorUp className="w-7 h-7 text-blue-400 group-hover:text-blue-300" />
           </div>
           <h2 className="text-2xl font-semibold mb-3 tracking-wide">Cast Chrome Tab</h2>
@@ -144,7 +144,7 @@ export default function Dashboard() {
         </div>
 
         <div onClick={handleCastLocalMedia} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-indigo-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
-          <div className="w-14 h-14 bg-gradient-to-br from-indigo-500/20 to-pink-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-all">
+          <div className="w-14 h-14 bg-linear-to-br from-indigo-500/20 to-pink-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-all">
             <Tv className="w-7 h-7 text-indigo-400 group-hover:text-indigo-300" />
           </div>
           <h2 className="text-2xl font-semibold mb-3 tracking-wide">Cast Local Media</h2>
@@ -152,7 +152,7 @@ export default function Dashboard() {
         </div>
 
         <div onClick={() => window.open('/receiver', '_blank')} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-emerald-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
-          <div className="w-14 h-14 bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all">
+          <div className="w-14 h-14 bg-linear-to-br from-emerald-500/20 to-teal-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all">
             <MonitorSmartphone className="w-7 h-7 text-emerald-400 group-hover:text-emerald-300" />
           </div>
           <h2 className="text-2xl font-semibold mb-3 tracking-wide">Connect Receiver</h2>
@@ -161,7 +161,7 @@ export default function Dashboard() {
       </main>
 
       <section className="mt-16 pt-8 relative">
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-[1px] bg-gradient-to-r from-transparent via-white/20 to-transparent"></div>
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-px bg-linear-to-r from-transparent via-white/20 to-transparent"></div>
         <h3 className="text-xl font-semibold mb-6 tracking-wide">Active Session</h3>
         <div className="glass-card p-6 md:p-8 rounded-2xl flex flex-col gap-6 relative overflow-hidden">
           {isConnected && <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-500/20 rounded-full blur-[50px] pointer-events-none"></div>}
