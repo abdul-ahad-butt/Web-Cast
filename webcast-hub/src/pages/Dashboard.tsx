@@ -99,28 +99,33 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col p-8">
-      <header className="mb-8 flex justify-between items-center">
+    <div className="min-h-screen text-foreground flex flex-col p-8 md:p-12 max-w-7xl mx-auto">
+      <header className="mb-12 flex justify-between items-center animate-float">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">WEBCAST HUB</h1>
-          <p className="text-muted-foreground mt-1">Cast anything to your screen.</p>
+          <h1 className="text-4xl md:text-5xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-500 pb-1">
+            WEBCAST HUB
+          </h1>
+          <p className="text-muted-foreground mt-2 text-lg font-light">Cast anything to your screen, instantly.</p>
         </div>
-        <button className="p-2 hover:bg-secondary rounded-full transition-colors">
-          <Settings className="w-6 h-6" />
+        <button className="p-3 hover:bg-secondary/50 rounded-full transition-all hover:scale-110 hover:shadow-[0_0_15px_rgba(59,130,246,0.3)]">
+          <Settings className="w-6 h-6 text-blue-400" />
         </button>
       </header>
 
-      <div className="mb-6 flex gap-4 items-center">
-        <input 
-          type="text" 
-          placeholder="Enter Room Code (e.g. ABCD)" 
-          value={roomId}
-          onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-          className="bg-input text-foreground border border-border rounded-lg px-4 py-2 uppercase font-mono tracking-widest"
-        />
+      <div className="mb-10 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+        <div className="relative group">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-500"></div>
+          <input 
+            type="text" 
+            placeholder="Enter Room Code" 
+            value={roomId}
+            onChange={(e) => setRoomId(e.target.value.toUpperCase())}
+            className="relative bg-black/50 text-foreground border border-white/10 rounded-lg px-6 py-3 uppercase font-mono tracking-[0.3em] text-lg outline-none focus:border-blue-500/50 transition-colors placeholder:text-muted-foreground/50 w-full sm:w-auto text-center"
+          />
+        </div>
         <button 
           onClick={generateRoom}
-          className="bg-secondary px-4 py-2 rounded-lg hover:bg-secondary/80 transition-colors"
+          className="relative px-6 py-3 rounded-lg font-medium bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_20px_rgba(37,99,235,0.4)] hover:shadow-[0_0_25px_rgba(37,99,235,0.6)] hover:-translate-y-0.5 transition-all w-full sm:w-auto"
         >
           Generate New
         </button>
@@ -129,57 +134,63 @@ export default function Dashboard() {
       <input type="file" ref={fileInputRef} className="hidden" accept="video/*,image/*" onChange={handleFileChange} />
       <video ref={videoRef} className="hidden" controls muted />
 
-      <main className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <div className="border border-border bg-card text-card-foreground p-6 rounded-xl flex flex-col items-start hover:border-primary transition-colors cursor-pointer group">
-          <div className="w-12 h-12 bg-secondary rounded-lg flex items-center justify-center mb-4 group-hover:scale-105 transition-transform">
-            <MonitorUp className="w-6 h-6" />
+      <main className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
+        <div className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-blue-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
+          <div className="w-14 h-14 bg-gradient-to-br from-blue-500/20 to-purple-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(59,130,246,0.3)] transition-all">
+            <MonitorUp className="w-7 h-7 text-blue-400 group-hover:text-blue-300" />
           </div>
-          <h2 className="text-xl font-semibold mb-2">Cast Chrome Tab</h2>
-          <p className="text-muted-foreground">Use the Chrome Extension to cast your tab.</p>
+          <h2 className="text-2xl font-semibold mb-3 tracking-wide">Cast Chrome Tab</h2>
+          <p className="text-muted-foreground/80 leading-relaxed font-light">Use the Chrome Extension to instantly cast your browser tab.</p>
         </div>
 
-        <div onClick={handleCastLocalMedia} className="border border-border bg-card text-card-foreground p-6 rounded-xl flex flex-col items-start hover:border-primary transition-colors cursor-pointer group">
-          <div className="w-12 h-12 bg-secondary rounded-lg flex items-center justify-center mb-4 group-hover:scale-105 transition-transform">
-            <Tv className="w-6 h-6" />
+        <div onClick={handleCastLocalMedia} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-indigo-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
+          <div className="w-14 h-14 bg-gradient-to-br from-indigo-500/20 to-pink-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-all">
+            <Tv className="w-7 h-7 text-indigo-400 group-hover:text-indigo-300" />
           </div>
-          <h2 className="text-xl font-semibold mb-2">Cast Local Media</h2>
-          <p className="text-muted-foreground">Play downloaded videos and images on the big screen.</p>
+          <h2 className="text-2xl font-semibold mb-3 tracking-wide">Cast Local Media</h2>
+          <p className="text-muted-foreground/80 leading-relaxed font-light">Play downloaded videos and high-res images on the big screen.</p>
         </div>
 
-        <div onClick={() => window.open('/receiver', '_blank')} className="border border-border bg-card text-card-foreground p-6 rounded-xl flex flex-col items-start hover:border-primary transition-colors cursor-pointer group">
-          <div className="w-12 h-12 bg-secondary rounded-lg flex items-center justify-center mb-4 group-hover:scale-105 transition-transform">
-            <MonitorSmartphone className="w-6 h-6" />
+        <div onClick={() => window.open('/receiver', '_blank')} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-emerald-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
+          <div className="w-14 h-14 bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all">
+            <MonitorSmartphone className="w-7 h-7 text-emerald-400 group-hover:text-emerald-300" />
           </div>
-          <h2 className="text-xl font-semibold mb-2">Connect Receiver</h2>
-          <p className="text-muted-foreground">Use this device as a display for incoming casts.</p>
+          <h2 className="text-2xl font-semibold mb-3 tracking-wide">Connect Receiver</h2>
+          <p className="text-muted-foreground/80 leading-relaxed font-light">Use this device as a display for incoming casts from anywhere.</p>
         </div>
       </main>
 
-      <section className="mt-12 border-t border-border pt-8">
-        <h3 className="text-lg font-medium mb-4">Active Session</h3>
-        <div className="p-4 border border-border rounded-xl bg-secondary/50 flex flex-col gap-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className={`w-3 h-3 rounded-full shadow-[0_0_8px_rgba(239,68,68,0.8)] ${isConnected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse' : 'bg-red-500'}`}></div>
+      <section className="mt-16 pt-8 relative">
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-[1px] bg-gradient-to-r from-transparent via-white/20 to-transparent"></div>
+        <h3 className="text-xl font-semibold mb-6 tracking-wide">Active Session</h3>
+        <div className="glass-card p-6 md:p-8 rounded-2xl flex flex-col gap-6 relative overflow-hidden">
+          {isConnected && <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-500/20 rounded-full blur-[50px] pointer-events-none"></div>}
+          
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 relative z-10">
+            <div className="flex items-center gap-5">
+              <div className="relative">
+                <div className={`w-4 h-4 rounded-full ${isConnected ? 'bg-emerald-400' : 'bg-red-500'}`}></div>
+                {isConnected && <div className="absolute inset-0 bg-emerald-400 rounded-full animate-ping opacity-75"></div>}
+              </div>
               <div>
-                <p className="font-medium">{status}</p>
-                <p className="text-sm text-muted-foreground">{isConnected ? `Room: ${roomId}` : 'No active casting room'}</p>
+                <p className="font-semibold text-lg">{status}</p>
+                <p className="text-muted-foreground font-light">{isConnected ? `Streaming to Room: ${roomId}` : 'No active casting room'}</p>
               </div>
             </div>
             <button 
               onClick={stopCasting}
               disabled={!isConnected}
-              className={`px-4 py-2 rounded-lg font-medium transition-opacity ${isConnected ? 'bg-destructive text-destructive-foreground hover:opacity-90' : 'bg-primary text-primary-foreground opacity-50 cursor-not-allowed'}`}
+              className={`px-6 py-3 rounded-lg font-medium transition-all shadow-lg ${isConnected ? 'bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 hover:shadow-[0_0_20px_rgba(239,68,68,0.2)]' : 'bg-secondary/50 text-muted-foreground opacity-50 cursor-not-allowed border border-white/5'}`}
             >
               Stop Casting
             </button>
           </div>
 
           {isConnected && (
-            <div className="flex gap-4 border-t border-border pt-4 mt-2">
-              <button onClick={() => signalingRef.current?.send({ type: "media-play" })} className="bg-primary text-primary-foreground px-4 py-2 rounded-lg">Play</button>
-              <button onClick={() => signalingRef.current?.send({ type: "media-pause" })} className="bg-secondary px-4 py-2 rounded-lg hover:bg-secondary/80">Pause</button>
-              <button onClick={() => signalingRef.current?.send({ type: "media-seek", time: 0 })} className="bg-secondary px-4 py-2 rounded-lg hover:bg-secondary/80">Restart</button>
+            <div className="flex gap-4 border-t border-white/5 pt-6 mt-2 relative z-10">
+              <button onClick={() => signalingRef.current?.send({ type: "media-play" })} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2.5 rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:-translate-y-0.5 transition-all font-medium">Play</button>
+              <button onClick={() => signalingRef.current?.send({ type: "media-pause" })} className="bg-secondary/80 hover:bg-secondary border border-white/5 px-6 py-2.5 rounded-lg hover:-translate-y-0.5 transition-all font-medium">Pause</button>
+              <button onClick={() => signalingRef.current?.send({ type: "media-seek", time: 0 })} className="bg-secondary/80 hover:bg-secondary border border-white/5 px-6 py-2.5 rounded-lg hover:-translate-y-0.5 transition-all font-medium">Restart</button>
             </div>
           )}
         </div>

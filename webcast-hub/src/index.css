@@ -1,26 +1,32 @@
 @import "tailwindcss";
 
 @theme {
-  --color-background: #09090b;
+  --color-background: #09090b; /* Fallback */
   --color-foreground: #fafafa;
-  --color-card: #09090b;
+  --color-card: rgba(255, 255, 255, 0.03);
   --color-card-foreground: #fafafa;
-  --color-popover: #09090b;
+  --color-popover: rgba(255, 255, 255, 0.05);
   --color-popover-foreground: #fafafa;
-  --color-primary: #fafafa;
-  --color-primary-foreground: #18181b;
-  --color-secondary: #27272a;
+  --color-primary: #3b82f6; /* Modern Blue */
+  --color-primary-foreground: #fafafa;
+  --color-secondary: rgba(255, 255, 255, 0.06);
   --color-secondary-foreground: #fafafa;
-  --color-muted: #27272a;
+  --color-muted: rgba(255, 255, 255, 0.05);
   --color-muted-foreground: #a1a1aa;
-  --color-accent: #27272a;
+  --color-accent: rgba(59, 130, 246, 0.15); /* Soft primary glow */
   --color-accent-foreground: #fafafa;
-  --color-destructive: #7f1d1d;
+  --color-destructive: #ef4444;
   --color-destructive-foreground: #fafafa;
-  --color-border: #27272a;
-  --color-input: #27272a;
-  --color-ring: #d4d4d8;
-  --radius: 0.5rem;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-input: rgba(255, 255, 255, 0.05);
+  --color-ring: #3b82f6;
+  --radius: 1rem;
+}
+
+@theme {
+  --animate-pulse-slow: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-float: float 6s ease-in-out infinite;
+  --animate-gradient: gradient 15s ease infinite;
 }
 
 @layer base {
@@ -35,7 +41,28 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply text-foreground antialiased;
+    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
+    background: linear-gradient(-45deg, #09090b, #111827, #0f172a, #020617);
+    background-size: 400% 400%;
+    animation: gradient 15s ease infinite;
+    min-height: 100vh;
   }
+}
+
+@keyframes gradient {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+  100% { transform: translateY(0px); }
+}
+
+.glass-card {
+  @apply bg-card border-border backdrop-blur-xl shadow-lg;
 }

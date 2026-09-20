@@ -76,35 +76,57 @@ export default function Receiver() {
   }, [roomId]);
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center relative overflow-hidden">
+    <div className="min-h-screen text-foreground flex flex-col items-center justify-center relative overflow-hidden">
+      {/* Background Animated Blobs */}
+      <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-600/20 rounded-full blur-[100px] animate-pulse-slow"></div>
+      <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-indigo-600/20 rounded-full blur-[100px] animate-pulse-slow" style={{ animationDelay: '2s' }}></div>
+
       {roomId ? (
         <>
           <video 
             ref={videoRef}
             autoPlay 
-            className={`w-full h-full absolute inset-0 object-contain ${hasMedia ? 'opacity-100' : 'opacity-0'} transition-opacity duration-500`}
+            className={`w-full h-full absolute inset-0 object-contain z-20 ${hasMedia ? 'opacity-100' : 'opacity-0'} transition-opacity duration-700`}
           />
           
           {!hasMedia && (
-            <div className="z-10 text-center animate-pulse">
-              <div className="w-16 h-16 border-4 border-t-blue-500 border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin mx-auto mb-6"></div>
-              <h1 className="text-2xl font-bold tracking-widest uppercase text-gray-400">{status}</h1>
-              <p className="text-gray-600 mt-2">Room: {roomId}</p>
-              <p className="text-gray-600 text-sm mt-1">Sender: {senderConnected ? "Connected" : "Not connected"}</p>
+            <div className="z-30 text-center animate-float glass-card p-12 rounded-3xl border border-white/10 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
+              <div className="relative w-24 h-24 mx-auto mb-8">
+                <div className="absolute inset-0 border-4 border-t-blue-500 border-r-indigo-500 border-b-transparent border-l-transparent rounded-full animate-spin"></div>
+                <div className="absolute inset-2 border-4 border-t-transparent border-r-transparent border-b-purple-500 border-l-pink-500 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }}></div>
+              </div>
+              <h1 className="text-3xl font-bold tracking-[0.2em] uppercase bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-400">{status}</h1>
+              <p className="text-muted-foreground/80 mt-4 text-lg font-light">Room Code: <strong className="text-white tracking-widest">{roomId}</strong></p>
+              <div className="mt-6 inline-flex items-center gap-3 bg-black/40 px-6 py-3 rounded-full border border-white/5">
+                <div className={`w-3 h-3 rounded-full ${senderConnected ? 'bg-emerald-400 animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.8)]' : 'bg-red-500'}`}></div>
+                <span className="text-sm font-medium tracking-wide">{senderConnected ? "Sender Connected" : "Awaiting Sender"}</span>
+              </div>
             </div>
           )}
         </>
       ) : (
-        <div className="text-center">
-          <h1 className="text-4xl font-bold tracking-tight mb-2">WEBCAST HUB</h1>
-          <p className="text-xl text-gray-400 mb-8">Ready to receive</p>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 max-w-md w-full">
-            <p className="text-sm text-gray-500 uppercase tracking-wider mb-2">Your Room Code</p>
-            <div className="text-5xl font-mono tracking-widest text-blue-400 font-bold mb-4">
-              {/* We can auto-generate and redirect to a room code, or prompt */}
-              ABCD
+        <div className="text-center z-10 animate-float">
+          <h1 className="text-5xl md:text-6xl font-bold tracking-tight mb-4 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-indigo-500 to-purple-500 pb-2">
+            WEBCAST HUB
+          </h1>
+          <p className="text-2xl text-muted-foreground/80 font-light mb-12 tracking-wide">Ready to receive</p>
+          
+          <div className="glass-card rounded-3xl p-10 max-w-md w-full relative overflow-hidden group hover:shadow-[0_0_40px_rgba(99,102,241,0.2)] transition-shadow duration-500 border border-white/10">
+            <div className="absolute -inset-1 bg-gradient-to-r from-blue-500/0 via-indigo-500/10 to-purple-500/0 opacity-0 group-hover:opacity-100 transition-opacity duration-1000"></div>
+            
+            <p className="text-sm text-muted-foreground/60 uppercase tracking-[0.3em] font-semibold mb-6 relative z-10">Your Room Code</p>
+            
+            <div className="relative inline-block mb-8 z-10">
+              <div className="absolute inset-0 bg-blue-500/20 blur-2xl rounded-full"></div>
+              <div className="text-6xl md:text-7xl font-mono tracking-[0.2em] text-white font-bold drop-shadow-[0_0_15px_rgba(255,255,255,0.3)]">
+                {/* Normally we might display a generated code here, but currently receiver takes it from URL */}
+                <span className="opacity-50">...</span>
+              </div>
             </div>
-            <p className="text-gray-500 text-sm">Create a session on the sender to join.</p>
+            
+            <p className="text-muted-foreground/80 font-light text-lg relative z-10">
+              Enter a Room Code in the URL to join.
+            </p>
           </div>
         </div>
       )}
