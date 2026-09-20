@@ -142,10 +142,15 @@ export default function Receiver() {
       if (videoRef.current) {
         if (videoRef.current.srcObject !== mediaStream) {
           videoRef.current.srcObject = mediaStream;
-          setHasMedia(true);
-          setMediaInfo(prev => ({ ...prev, resolution: prev?.resolution || "Live Stream" }));
-          setStatus("");
+        } else {
+          // Force video element to detect newly added tracks
+          videoRef.current.srcObject = null;
+          videoRef.current.srcObject = mediaStream;
         }
+        
+        setHasMedia(true);
+        setMediaInfo(prev => ({ ...prev, resolution: prev?.resolution || "Live Stream" }));
+        setStatus("");
         
         videoRef.current.play().catch(err => {
           console.error("Autoplay prevented:", err);

@@ -1,4 +1,5 @@
-import { SignalingClient, type SignalingMessage } from "./SignalingClient";
+import { SignalingClient } from "./SignalingClient";
+import type { SignalingMessage } from "./SignalingClient";
 
 export class WebRTCPeerConnection {
   public pc: RTCPeerConnection;
@@ -112,6 +113,8 @@ export class WebRTCPeerConnection {
         parameters.encodings = [{}];
       }
       parameters.encodings[0].maxBitrate = 50 * 1000 * 1000;
+      parameters.encodings[0].scaleResolutionDownBy = 1;
+      parameters.encodings[0].maxFramerate = 60;
       
       sender.setParameters(parameters).catch(e => {
         console.warn("[WebRTC] Failed to set max bitrate", e);
