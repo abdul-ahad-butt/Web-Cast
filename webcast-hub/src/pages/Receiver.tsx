@@ -27,7 +27,7 @@ export default function Receiver() {
   const [showSettings, setShowSettings] = useState(false);
   const [mediaInfo, setMediaInfo] = useState<{filename?: string, resolution?: string} | null>(null);
   const [webrtcState, setWebrtcState] = useState<string>("");
-  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const formatTime = (time: number) => {
     if (isNaN(time)) return "00:00";

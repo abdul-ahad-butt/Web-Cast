@@ -7,9 +7,9 @@ export type SignalingMessage =
   | { type: "media-seek"; time: number }
   | { type: "sender-joined" }
   | { type: "sender-disconnected" }
-  | { type: "webrtc-offer"; offer: any }
-  | { type: "webrtc-answer"; answer: any }
-  | { type: "webrtc-candidate"; candidate: any };
+  | { type: "offer"; offer: any }
+  | { type: "answer"; answer: any }
+  | { type: "ice-candidate"; candidate: any };
 
 export class SignalingClient {
   private ws: WebSocket | null = null;
