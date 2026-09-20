@@ -12,7 +12,8 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, Range",
+      "Access-Control-Expose-Headers": "Accept-Ranges, Content-Range, Content-Length, Content-Type",
     };
 
     if (request.method === "OPTIONS") {
@@ -126,7 +127,30 @@ export default {
       const mediaMatch = url.pathname.match(/^\/api\/media\/(.+)$/);
       if (mediaMatch && request.method === "GET") {
         const mediaId = mediaMatch[1];
-        const object = await env.LOCAL_MEDIA_BUCKET.get(mediaId);
+        
+        const rangeHeader = request.headers.get("Range");
+        let start: number | undefined;
+        let end: number | undefined;
+
+        if (rangeHeader) {
+          const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+          if (match) {
+            start = parseInt(match[1], 10);
+            if (match[2]) {
+              end = parseInt(match[2], 10);
+            }
+          }
+        }
+        
+        const options: any = {};
+        if (start !== undefined) {
+          options.range = { offset: start };
+          if (end !== undefined) {
+            options.range.length = end - start + 1;
+          }
+        }
+
+        const object = await env.LOCAL_MEDIA_BUCKET.get(mediaId, options);
         
         if (object === null) {
           return new Response("Not Found", { status: 404, headers: corsHeaders });
@@ -135,8 +159,17 @@ export default {
         const headers = new Headers(corsHeaders);
         object.writeHttpMetadata(headers);
         headers.set("etag", object.httpEtag);
+        headers.set("Accept-Ranges", "bytes");
         
-        return new Response(object.body, { headers });
+        // R2 uses `object.range` if a partial request was made and fulfilled
+        if (object.range) {
+          headers.set("Content-Range", `bytes ${object.range.offset}-${object.range.offset + object.range.length - 1}/${object.size}`);
+          headers.set("Content-Length", `${object.range.length}`);
+          return new Response(object.body, { status: 206, headers });
+        } else {
+          headers.set("Content-Length", `${object.size}`);
+          return new Response(object.body, { status: 200, headers });
+        }
       }
 
       // Route: /api/rooms/:roomId/debug - Inspect DO state
