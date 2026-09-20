@@ -9,7 +9,9 @@ export type SignalingMessage =
   | { type: "sender-disconnected" }
   | { type: "offer"; offer: any }
   | { type: "answer"; answer: any }
-  | { type: "ice-candidate"; candidate: any };
+  | { type: "ice-candidate"; candidate: any }
+  | { type: "ping" }
+  | { type: "pong" };
 
 export class SignalingClient {
   private ws: WebSocket | null = null;
@@ -22,6 +24,7 @@ export class SignalingClient {
   public onConnect?: () => void;
   public onDisconnect?: () => void;
   public onError?: (error: any) => void;
+  private pingInterval?: ReturnType<typeof setInterval>;
 
   constructor(roomId: string, clientType: ClientType, token?: string) {
     this.roomId = roomId;
@@ -57,12 +60,21 @@ export class SignalingClient {
 
     this.ws.onopen = () => {
       console.log(`[Signaling] Connected as ${this.clientType}`);
+      
+      // Keep connection alive
+      this.pingInterval = setInterval(() => {
+        if (this.isOpen()) {
+          this.send({ type: "ping" });
+        }
+      }, 30000);
+
       this.onConnect?.();
     };
 
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        if (data.type === "pong" || data.type === "ping") return;
         console.log(`[Signaling] Received:`, data.type);
         this.onMessage?.(data);
       } catch (err) {
@@ -72,12 +84,14 @@ export class SignalingClient {
 
     this.ws.onclose = () => {
       console.log("[Signaling] Disconnected");
+      if (this.pingInterval) clearInterval(this.pingInterval);
       this.onDisconnect?.();
       this.ws = null;
     };
 
     this.ws.onerror = (error) => {
       console.error("[Signaling] WebSocket error", error);
+      if (this.pingInterval) clearInterval(this.pingInterval);
       this.onError?.(error);
     };
   }
@@ -91,6 +105,7 @@ export class SignalingClient {
   }
 
   disconnect() {
+    if (this.pingInterval) clearInterval(this.pingInterval);
     if (this.ws) {
       this.ws.close();
       this.ws = null;

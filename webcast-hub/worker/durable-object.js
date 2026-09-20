@@ -92,6 +92,10 @@ export class CastRoomDurableObject {
             const msg = JSON.parse(message);
             if (!msg.type)
                 return;
+            if (msg.type === "ping") {
+                ws.send(JSON.stringify({ type: "pong" }));
+                return;
+            }
             const session = this.sessions.get(ws);
             if (!session)
                 return;
@@ -150,9 +154,12 @@ export class CastRoomDurableObject {
             this.broadcast(JSON.stringify({
                 type: session.type === "sender" ? "sender-disconnected" : "receiver-disconnected"
             }));
-            // If sender disconnects, clear media state
+            // If sender disconnects, clear media state ONLY if there are no other senders
             if (session.type === "sender") {
-                this.mediaState = { url: null, filename: undefined, resolution: undefined, playing: false, currentTime: 0 };
+                const hasSender = Array.from(this.sessions.values()).some(s => s.type === "sender");
+                if (!hasSender) {
+                    this.mediaState = { url: null, filename: undefined, resolution: undefined, playing: false, currentTime: 0 };
+                }
             }
         }
     }
