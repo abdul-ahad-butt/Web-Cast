@@ -5,7 +5,8 @@ export default {
         const corsHeaders = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Range",
+            "Access-Control-Expose-Headers": "Accept-Ranges, Content-Range, Content-Length, Content-Type",
         };
         if (request.method === "OPTIONS") {
             return new Response(null, { headers: corsHeaders });
@@ -102,14 +103,46 @@ export default {
             const mediaMatch = url.pathname.match(/^\/api\/media\/(.+)$/);
             if (mediaMatch && request.method === "GET") {
                 const mediaId = mediaMatch[1];
-                const object = await env.LOCAL_MEDIA_BUCKET.get(mediaId);
+                const rangeHeader = request.headers.get("Range");
+                let start;
+                let end;
+                if (rangeHeader) {
+                    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+                    if (match) {
+                        start = parseInt(match[1], 10);
+                        if (match[2]) {
+                            end = parseInt(match[2], 10);
+                        }
+                    }
+                }
+                const options = {};
+                if (start !== undefined) {
+                    options.range = { offset: start };
+                    if (end !== undefined) {
+                        options.range.length = end - start + 1;
+                    }
+                }
+                const object = await env.LOCAL_MEDIA_BUCKET.get(mediaId, options);
                 if (object === null) {
                     return new Response("Not Found", { status: 404, headers: corsHeaders });
                 }
                 const headers = new Headers(corsHeaders);
                 object.writeHttpMetadata(headers);
                 headers.set("etag", object.httpEtag);
-                return new Response(object.body, { headers });
+                headers.set("Accept-Ranges", "bytes");
+                // R2 uses `object.range` if a partial request was made and fulfilled
+                const obj = object;
+                if (obj.range && 'offset' in obj.range && obj.range.offset !== undefined) {
+                    const offset = obj.range.offset;
+                    const length = obj.range.length || obj.size - offset; // fallback if length isn't provided
+                    headers.set("Content-Range", `bytes ${offset}-${offset + length - 1}/${obj.size}`);
+                    headers.set("Content-Length", `${length}`);
+                    return new Response(obj.body, { status: 206, headers });
+                }
+                else {
+                    headers.set("Content-Length", `${obj.size}`);
+                    return new Response(obj.body, { status: 200, headers });
+                }
             }
             // Route: /api/rooms/:roomId/debug - Inspect DO state
             const debugMatch = url.pathname.match(/^\/api\/rooms\/([A-Z0-9-]+)\/debug$/);

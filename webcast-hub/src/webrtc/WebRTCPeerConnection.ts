@@ -67,7 +67,21 @@ export class WebRTCPeerConnection {
   }
 
   addTrack(track: MediaStreamTrack, stream: MediaStream) {
-    this.pc.addTrack(track, stream);
+    const sender = this.pc.addTrack(track, stream);
+    
+    // Force high bitrate for 4K streaming preservation
+    if (track.kind === 'video') {
+      const parameters = sender.getParameters();
+      if (!parameters.encodings) {
+        parameters.encodings = [{}];
+      }
+      // Allow up to 50 Mbps for pristine 4K quality
+      parameters.encodings[0].maxBitrate = 50 * 1000 * 1000;
+      
+      sender.setParameters(parameters).catch(e => {
+        console.warn("[WebRTC] Failed to set max bitrate", e);
+      });
+    }
   }
 
   createDataChannel(label: string, options?: RTCDataChannelInit) {

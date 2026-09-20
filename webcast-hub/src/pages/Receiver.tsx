@@ -125,7 +125,7 @@ export default function Receiver() {
         if (videoRef.current.srcObject !== streams[0]) {
           videoRef.current.srcObject = streams[0];
           setHasMedia(true);
-          setMediaInfo({ resolution: "Live Stream" });
+          setMediaInfo(prev => ({ ...prev, resolution: prev?.resolution || "Live Stream" }));
           setStatus("");
         }
       }
@@ -252,7 +252,12 @@ export default function Receiver() {
                         <div className="absolute bottom-full right-0 mb-4 bg-black/90 border border-white/10 rounded-lg p-2 min-w-37.5 shadow-2xl backdrop-blur-md">
                           <p className="text-xs text-muted-foreground uppercase tracking-widest font-semibold px-3 py-2 border-b border-white/10 mb-1">Quality</p>
                           <button className="w-full text-left px-3 py-2 hover:bg-white/10 rounded-md text-sm flex items-center justify-between text-blue-400 font-medium">
-                            {mediaInfo?.resolution || "Auto"}
+                            <div className="flex items-center gap-2">
+                              {mediaInfo?.resolution || "Auto"}
+                              {(mediaInfo?.resolution === "4K" || mediaInfo?.resolution === "2160p") && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 uppercase tracking-wider">4K UHD</span>
+                              )}
+                            </div>
                             <div className="w-2 h-2 rounded-full bg-blue-500"></div>
                           </button>
                         </div>

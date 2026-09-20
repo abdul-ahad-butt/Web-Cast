@@ -55,7 +55,11 @@ export default function Dashboard() {
     }
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
+        video: {
+          width: { ideal: 3840, max: 3840 },
+          height: { ideal: 2160, max: 2160 },
+          frameRate: { ideal: 60, max: 60 }
+        },
         audio: true
       });
       
@@ -76,6 +80,8 @@ export default function Dashboard() {
       signalingRef.current.onConnect = async () => {
         setStatus("Casting screen...");
         setIsConnected(true);
+        // We know it's a live stream, but we want to tell the receiver to expect high quality
+        setMediaInfo({ filename: "Screen Capture", resolution: "4K" }); 
         await pcRef.current?.createOffer();
       };
       
@@ -324,7 +330,12 @@ export default function Dashboard() {
                 {isConnected && <div className="absolute inset-0 bg-emerald-400 rounded-full animate-ping opacity-75"></div>}
               </div>
               <div>
-                <p className="font-semibold text-lg">{status}</p>
+                <div className="flex items-center gap-3">
+                  <p className="font-semibold text-lg">{status}</p>
+                  {(mediaInfo?.resolution === "4K" || mediaInfo?.resolution === "2160p") && (
+                    <span className="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 uppercase tracking-wider">4K UHD</span>
+                  )}
+                </div>
                 <p className="text-muted-foreground font-light">
                   {isConnected ? (
                     mediaInfo ? `Playing: ${mediaInfo.filename} (${mediaInfo.resolution})` : `Streaming to Room: ${roomId}`
