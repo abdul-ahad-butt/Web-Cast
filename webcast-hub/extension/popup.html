@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WebCast Hub</title>
   <style>
     body {
@@ -61,6 +62,10 @@
     .hidden {
       display: none;
     }
+    .room-info {
+      text-align: center;
+      margin-bottom: 16px;
+    }
   </style>
 </head>
 <body>
@@ -73,7 +78,7 @@
   </div>
 
   <div id="activeView" class="hidden">
-    <p style="text-align: center; margin-bottom: 16px;">
+    <p class="room-info">
       Casting to Room: <strong id="activeRoomCode">...</strong>
     </p>
     <button id="btnStopCast" class="btn btn-danger">Stop Casting</button>
