@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Play, Pause, Volume2, VolumeX, Maximize, Settings, Loader2 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
-import { SignalingClient } from "../webrtc/SignalingClient";
+import { getGlobalSignaling } from "../webrtc/SignalingClient";
 import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
 
 export default function Receiver() {
@@ -14,6 +14,7 @@ export default function Receiver() {
   const [status, setStatus] = useState<string>("Initializing...");
   const [hasMedia, setHasMedia] = useState<boolean>(false);
   const [senderConnected, setSenderConnected] = useState<boolean>(false);
+  const [needsUserInteraction, setNeedsUserInteraction] = useState<boolean>(false);
   
   // Custom Player States
   const [isPlaying, setIsPlaying] = useState(false);
@@ -85,7 +86,7 @@ export default function Receiver() {
     if (!roomId) return;
 
     setStatus("Connecting to signaling server...");
-    const signaling = new SignalingClient(roomId, "receiver");
+    const signaling = getGlobalSignaling(roomId, "receiver");
     const peer = new WebRTCPeerConnection(signaling);
 
     signaling.onConnect = () => {
@@ -95,10 +96,21 @@ export default function Receiver() {
     const originalOnMessage = signaling.onMessage;
     signaling.onMessage = (msg) => {
       originalOnMessage?.(msg);
-      if (msg.type === "sender-joined") {
+      
+      if (msg.type === "room-state") {
+        if (msg.senderPresent) {
+          setSenderConnected(true);
+          setStatus("Sender present. Requesting stream...");
+          signaling.send({ type: "request-offer", receiverId: signaling.clientId } as any);
+        } else {
+          setSenderConnected(false);
+          setStatus("Waiting for sender...");
+        }
+      } else if (msg.type === "sender-joined") {
         setSenderConnected(true);
-        setStatus("Sender joined. Waiting for stream...");
-      } else if (msg.type === "sender-disconnected") {
+        setStatus("Sender joined. Requesting stream...");
+        signaling.send({ type: "request-offer", receiverId: signaling.clientId } as any);
+      } else if (msg.type === "peer-left" && msg.role === "sender") {
         setSenderConnected(false);
         setHasMedia(false);
         setStatus("Sender disconnected. Waiting...");
@@ -127,6 +139,11 @@ export default function Receiver() {
           setHasMedia(true);
           setMediaInfo(prev => ({ ...prev, resolution: prev?.resolution || "Live Stream" }));
           setStatus("");
+          
+          videoRef.current.play().catch(err => {
+            console.error("Autoplay prevented:", err);
+            setNeedsUserInteraction(true);
+          });
         }
       }
     };
@@ -145,7 +162,7 @@ export default function Receiver() {
     signaling.connect();
 
     return () => {
-      signaling.disconnect();
+      // Don't disconnect global signaling, just close peer
       peer.close();
     };
   }, [roomId]);
@@ -184,9 +201,25 @@ export default function Receiver() {
             />
 
             {/* Loading/Buffering State */}
-            {isBuffering && (
+            {isBuffering && !needsUserInteraction && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-30 pointer-events-none">
                 <Loader2 className="w-16 h-16 text-blue-500 animate-spin" />
+              </div>
+            )}
+            
+            {/* Tap to Start Overlay */}
+            {needsUserInteraction && (
+              <div 
+                className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-40 cursor-pointer backdrop-blur-sm"
+                onClick={() => {
+                  videoRef.current?.play().then(() => setNeedsUserInteraction(false));
+                }}
+              >
+                <div className="w-24 h-24 bg-blue-600 rounded-full flex items-center justify-center shadow-[0_0_40px_rgba(37,99,235,0.6)] mb-6 animate-pulse">
+                  <Play className="w-12 h-12 text-white ml-2" />
+                </div>
+                <p className="text-2xl font-bold tracking-wider uppercase bg-clip-text text-transparent bg-linear-to-r from-blue-400 to-indigo-400">Tap to Start Video</p>
+                <p className="text-muted-foreground mt-2">Browser autoplay policy requires interaction</p>
               </div>
             )}
             

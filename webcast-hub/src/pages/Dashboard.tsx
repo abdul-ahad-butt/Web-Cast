@@ -1,6 +1,6 @@
 import { MonitorUp, Tv, MonitorSmartphone, Settings } from "lucide-react";
-import { useState, useRef } from "react";
-import { SignalingClient } from "../webrtc/SignalingClient";
+import { useState, useRef, useEffect } from "react";
+import { SignalingClient, getGlobalSignaling } from "../webrtc/SignalingClient";
 import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
 
 export default function Dashboard() {
@@ -10,10 +10,12 @@ export default function Dashboard() {
   const [status, setStatus] = useState<string>("Not Connected");
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [mediaInfo, setMediaInfo] = useState<{filename: string, resolution: string} | null>(null);
+  const [receiverCount, setReceiverCount] = useState<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const signalingRef = useRef<SignalingClient | null>(null);
-  const pcRef = useRef<WebRTCPeerConnection | null>(null);
+  const pcMapRef = useRef<Map<string, WebRTCPeerConnection>>(new Map());
+  const activeStreamRef = useRef<MediaStream | null>(null);
 
   const generateRoom = async () => {
     try {
@@ -27,13 +29,28 @@ export default function Dashboard() {
       setOwnerToken(data.ownerToken);
       
       // Connect to signaling immediately so the receiver sees the sender is ready
-      if (signalingRef.current) {
-        signalingRef.current.disconnect();
-      }
-      const signaling = new SignalingClient(data.roomId, "sender", data.ownerToken);
+      const signaling = getGlobalSignaling(data.roomId, "sender", data.ownerToken);
       signalingRef.current = signaling;
+      
+      signaling.onMessage = (msg) => {
+        if (msg.type === "room-state") {
+          setReceiverCount(msg.receiverCount);
+        } else if (msg.type === "receiver-joined") {
+          setReceiverCount(prev => prev + 1);
+          handleReceiverJoined(msg.receiverId!);
+        } else if (msg.type === "peer-left" && msg.role === "receiver") {
+          setReceiverCount(prev => Math.max(0, prev - 1));
+          if (msg.clientId && pcMapRef.current.has(msg.clientId)) {
+            pcMapRef.current.get(msg.clientId)?.close();
+            pcMapRef.current.delete(msg.clientId);
+          }
+        } else if (msg.type === "request-offer") {
+          handleReceiverJoined(msg.receiverId!);
+        }
+      };
+
       signaling.onConnect = () => {
-        setStatus("Room Ready");
+        setStatus("Waiting for receiver...");
         setIsConnected(true);
       };
       signaling.onDisconnect = () => {
@@ -48,6 +65,22 @@ export default function Dashboard() {
   };
 
 
+  const handleReceiverJoined = async (receiverId: string) => {
+    if (!activeStreamRef.current || !signalingRef.current) return;
+    
+    let pc = pcMapRef.current.get(receiverId);
+    if (!pc) {
+      pc = new WebRTCPeerConnection(signalingRef.current, receiverId);
+      pcMapRef.current.set(receiverId, pc);
+    }
+    
+    activeStreamRef.current.getTracks().forEach(track => {
+      pc!.addTrack(track, activeStreamRef.current!);
+    });
+    
+    await pc.createOffer();
+  };
+
   const handleCastChromeTab = async () => {
     if (!roomId) {
       alert("Please generate or enter a room ID first");
@@ -55,35 +88,17 @@ export default function Dashboard() {
     }
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: { ideal: 3840, max: 3840 },
-          height: { ideal: 2160, max: 2160 },
-          frameRate: { ideal: 60, max: 60 }
-        },
+        video: { width: { ideal: 3840, max: 3840 }, height: { ideal: 2160, max: 2160 }, frameRate: { ideal: 60, max: 60 } },
         audio: true
       });
-      
-      setStatus("Starting screen cast...");
+      activeStreamRef.current = stream;
+      setStatus("Casting screen...");
       
       if (!signalingRef.current || signalingRef.current.roomId !== roomId) {
-        signalingRef.current?.disconnect();
-        signalingRef.current = new SignalingClient(roomId, "sender", ownerToken);
-      }
-      if (!pcRef.current) {
-        pcRef.current = new WebRTCPeerConnection(signalingRef.current);
+        signalingRef.current = getGlobalSignaling(roomId, "sender", ownerToken);
       }
       
-      stream.getTracks().forEach((track) => {
-        pcRef.current?.addTrack(track, stream);
-      });
-      
-      signalingRef.current.onConnect = async () => {
-        setStatus("Casting screen...");
-        setIsConnected(true);
-        // We know it's a live stream, but we want to tell the receiver to expect high quality
-        setMediaInfo({ filename: "Screen Capture", resolution: "4K" }); 
-        await pcRef.current?.createOffer();
-      };
+      setMediaInfo({ filename: "Screen Capture", resolution: "4K" }); 
       
       signalingRef.current.connect();
       
@@ -112,128 +127,78 @@ export default function Dashboard() {
     }
 
     if (file.type.startsWith("video/") || file.type.startsWith("image/")) {
-      setStatus(`Processing ${file.name}...`);
+      setStatus(`Loading ${file.name}...`);
       
-      let resolution = "Original";
-      if (file.type.startsWith("video/")) {
-        try {
-          const url = URL.createObjectURL(file);
-          const tempVideo = document.createElement("video");
-          tempVideo.src = url;
-          await new Promise((resolve) => {
-            tempVideo.onloadedmetadata = () => {
-              const height = tempVideo.videoHeight;
-              if (height >= 2160) resolution = "4K";
-              else if (height >= 1440) resolution = "2K";
-              else if (height >= 1080) resolution = "1080p";
-              else if (height >= 720) resolution = "720p";
-              else resolution = `${tempVideo.videoWidth}x${height}`;
-              URL.revokeObjectURL(url);
-              resolve(null);
-            };
-            tempVideo.onerror = () => {
-              URL.revokeObjectURL(url);
-              resolve(null);
-            };
-          });
-        } catch (e) {
-          console.error("Failed to detect resolution", e);
-        }
-      }
+      if (!videoRef.current) return;
+      const url = URL.createObjectURL(file);
+      videoRef.current.src = url;
+      
+      await new Promise(resolve => {
+        if (!videoRef.current) return resolve(null);
+        videoRef.current.onloadedmetadata = resolve;
+      });
 
-      setStatus(`Uploading ${file.name}...`);
-      setUploadProgress(1); // Trigger progress UI
+      let resolution = `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`;
+      if (videoRef.current.videoHeight >= 2160) resolution = "4K";
+      else if (videoRef.current.videoHeight >= 1080) resolution = "1080p";
+
+      setMediaInfo({ filename: file.name, resolution });
+
       try {
-        let baseUrl = import.meta.env.VITE_API_URL || "https://webcast-hub.abdulahadbutt420.workers.dev";
-        if (!import.meta.env.VITE_API_URL && window.location.hostname === "localhost") baseUrl = "http://localhost:8787";
-        baseUrl = baseUrl.replace(/\/$/, "");
-        
-        // 1. Start multipart upload
-        const startRes = await fetch(`${baseUrl}/api/rooms/${roomId}/upload/start`, {
-          method: "POST",
-          headers: {
-            "Content-Type": file.type,
-            "Authorization": `Bearer ${ownerToken}`
-          }
-        });
-        
-        if (!startRes.ok) throw new Error("Upload start failed");
-        const { uploadId, mediaId } = await startRes.json();
-
-        // 2. Upload chunks
-        const chunkSize = 50 * 1024 * 1024; // 50MB
-        const numChunks = Math.ceil(file.size / chunkSize);
-        const parts: { partNumber: number, etag: string }[] = [];
-
-        for (let i = 0; i < numChunks; i++) {
-          const start = i * chunkSize;
-          const end = Math.min(start + chunkSize, file.size);
-          const chunk = file.slice(start, end);
-          const partNumber = i + 1;
-
-          const partRes = await fetch(`${baseUrl}/api/rooms/${roomId}/upload/${uploadId}/${partNumber}?mediaId=${mediaId}`, {
-            method: "PUT",
-            body: chunk,
-            headers: {
-              "Authorization": `Bearer ${ownerToken}`
-            }
-          });
-          
-          if (!partRes.ok) throw new Error(`Upload part ${partNumber} failed`);
-          const partData = await partRes.json();
-          parts.push({ partNumber: partData.partNumber, etag: partData.etag });
-          
-          setUploadProgress(((i + 1) / numChunks) * 100);
-        }
-
-        // 3. Complete multipart upload
-        const completeRes = await fetch(`${baseUrl}/api/rooms/${roomId}/upload/${uploadId}/complete?mediaId=${mediaId}`, {
-          method: "POST",
-          body: JSON.stringify({ parts }),
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${ownerToken}`
-          }
-        });
-        
-        if (!completeRes.ok) throw new Error("Upload complete failed");
-        const { mediaUrl } = await completeRes.json();
-        
-        setUploadProgress(0); // Hide progress UI
-        
-        if (!signalingRef.current || signalingRef.current.roomId !== roomId || !signalingRef.current.isOpen()) {
-          signalingRef.current?.disconnect();
-          const signaling = new SignalingClient(roomId, "sender", ownerToken);
-          signalingRef.current = signaling;
-          signaling.onConnect = () => {
-            setMediaInfo({ filename: file.name, resolution });
-            setStatus(`Casting Local Media`);
-            setIsConnected(true);
-            signaling.send({ type: "media-url", url: mediaUrl, filename: file.name, resolution });
-          };
-          signaling.connect();
-        } else {
-          signalingRef.current.send({ type: "media-url", url: mediaUrl, filename: file.name, resolution });
-          setMediaInfo({ filename: file.name, resolution });
-          setStatus(`Casting Local Media`);
-        }
+        await videoRef.current.play();
       } catch (err) {
-        console.error("Upload failed", err);
-        setStatus("Upload failed.");
-        setUploadProgress(0);
+        console.error("Autoplay failed", err);
+        alert("Autoplay blocked. Please try again.");
+        URL.revokeObjectURL(url);
+        return;
       }
+
+      // Feature detect captureStream
+      const captureStream = (videoRef.current as any).captureStream || (videoRef.current as any).mozCaptureStream;
+      if (!captureStream) {
+        alert("Your browser does not support capturing video streams (captureStream API).");
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      const stream: MediaStream = captureStream.call(videoRef.current);
+      if (stream.getVideoTracks().length === 0) {
+        await new Promise(resolve => {
+          stream.onaddtrack = () => resolve(null);
+        });
+      }
+
+      activeStreamRef.current = stream;
+      setStatus(`Casting Local Media`);
+      setIsConnected(true);
+
+      if (!signalingRef.current || signalingRef.current.roomId !== roomId) {
+        signalingRef.current = getGlobalSignaling(roomId, "sender", ownerToken);
+      }
+      signalingRef.current.connect();
+      
     } else {
       alert("Only video/image casting is implemented for now");
     }
   };
 
   const stopCasting = () => {
-    signalingRef.current?.disconnect();
-    pcRef.current?.close();
+    signalingRef.current?.send({ type: "cast-stopped" } as any);
+    
+    pcMapRef.current.forEach(pc => pc.close());
+    pcMapRef.current.clear();
+    
+    if (activeStreamRef.current) {
+      activeStreamRef.current.getTracks().forEach(track => track.stop());
+      activeStreamRef.current = null;
+    }
+    
     if (videoRef.current) {
       videoRef.current.pause();
+      if (videoRef.current.src) URL.revokeObjectURL(videoRef.current.src);
       videoRef.current.src = "";
     }
+    
     setIsConnected(false);
     setStatus("Not Connected");
     setMediaInfo(null);
@@ -273,7 +238,8 @@ export default function Dashboard() {
       </div>
 
       <input type="file" ref={fileInputRef} className="hidden" accept="video/*,image/*" onChange={handleFileChange} />
-      <video ref={videoRef} className="hidden" controls muted />
+      {/* Must be played inline to capture stream properly */}
+      <video ref={videoRef} className="hidden" controls muted playsInline />
 
       <main className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
         <div onClick={handleCastChromeTab} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-blue-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
@@ -292,7 +258,7 @@ export default function Dashboard() {
           <p className="text-muted-foreground/80 leading-relaxed font-light">Play downloaded videos and high-res images on the big screen.</p>
         </div>
 
-        <div onClick={() => window.open('/receiver', '_blank')} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-emerald-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
+        <div onClick={() => window.open('/receiver', '_blank', 'noopener')} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-emerald-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
           <div className="w-14 h-14 bg-linear-to-br from-emerald-500/20 to-teal-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all">
             <MonitorSmartphone className="w-7 h-7 text-emerald-400 group-hover:text-emerald-300" />
           </div>
@@ -331,7 +297,7 @@ export default function Dashboard() {
               </div>
               <div>
                 <div className="flex items-center gap-3">
-                  <p className="font-semibold text-lg">{status}</p>
+                  <p className="font-semibold text-lg">{isConnected && receiverCount === 0 ? "Waiting for receiver..." : status}</p>
                   {(mediaInfo?.resolution === "4K" || mediaInfo?.resolution === "2160p") && (
                     <span className="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 uppercase tracking-wider">4K UHD</span>
                   )}
@@ -354,9 +320,9 @@ export default function Dashboard() {
 
           {isConnected && (
             <div className="flex gap-4 border-t border-white/5 pt-6 mt-2 relative z-10">
-              <button onClick={() => signalingRef.current?.send({ type: "media-play" })} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2.5 rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:-translate-y-0.5 transition-all font-medium">Play</button>
-              <button onClick={() => signalingRef.current?.send({ type: "media-pause" })} className="bg-secondary/80 hover:bg-secondary border border-white/5 px-6 py-2.5 rounded-lg hover:-translate-y-0.5 transition-all font-medium">Pause</button>
-              <button onClick={() => signalingRef.current?.send({ type: "media-seek", time: 0 })} className="bg-secondary/80 hover:bg-secondary border border-white/5 px-6 py-2.5 rounded-lg hover:-translate-y-0.5 transition-all font-medium">Restart</button>
+              <button onClick={() => videoRef.current?.play()} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2.5 rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:-translate-y-0.5 transition-all font-medium">Play</button>
+              <button onClick={() => videoRef.current?.pause()} className="bg-secondary/80 hover:bg-secondary border border-white/5 px-6 py-2.5 rounded-lg hover:-translate-y-0.5 transition-all font-medium">Pause</button>
+              <button onClick={() => { if (videoRef.current) videoRef.current.currentTime = 0; }} className="bg-secondary/80 hover:bg-secondary border border-white/5 px-6 py-2.5 rounded-lg hover:-translate-y-0.5 transition-all font-medium">Restart</button>
             </div>
           )}
         </div>

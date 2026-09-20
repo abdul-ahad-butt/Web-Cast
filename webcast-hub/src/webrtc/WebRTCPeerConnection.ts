@@ -3,6 +3,7 @@ import { SignalingClient } from "./SignalingClient";
 export class WebRTCPeerConnection {
   private pc: RTCPeerConnection;
   private signaling: SignalingClient;
+  private targetId?: string;
   
   public onTrack?: (track: MediaStreamTrack, streams: readonly MediaStream[]) => void;
   public onDataChannel?: (channel: RTCDataChannel) => void;
@@ -10,8 +11,9 @@ export class WebRTCPeerConnection {
   
   private pendingCandidates: RTCIceCandidateInit[] = [];
 
-  constructor(signaling: SignalingClient) {
+  constructor(signaling: SignalingClient, targetId?: string) {
     this.signaling = signaling;
+    this.targetId = targetId;
     this.pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
@@ -20,7 +22,7 @@ export class WebRTCPeerConnection {
 
     this.pc.onicecandidate = (event) => {
       if (event.candidate) {
-        this.signaling.send({ type: "ice-candidate", candidate: event.candidate });
+        this.signaling.send({ type: "ice-candidate", candidate: event.candidate, targetId: this.targetId } as any);
       }
     };
 
@@ -49,14 +51,28 @@ export class WebRTCPeerConnection {
       existingOnMessage?.(msg);
       
       try {
+        if (msg.targetId && msg.targetId !== this.signaling.clientId) {
+          // Ignore messages not meant for this peer
+          return;
+        }
+
         switch (msg.type) {
           case "offer":
+            if (!this.targetId && msg.clientId) {
+              this.targetId = msg.clientId;
+            }
             await this.handleOffer(msg.offer);
             break;
           case "answer":
+            if (!this.targetId && msg.clientId) {
+              this.targetId = msg.clientId;
+            }
             await this.handleAnswer(msg.answer);
             break;
           case "ice-candidate":
+            if (!this.targetId && msg.clientId) {
+              this.targetId = msg.clientId;
+            }
             await this.handleIceCandidate(msg.candidate);
             break;
         }
@@ -91,7 +107,7 @@ export class WebRTCPeerConnection {
   async createOffer() {
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
-    this.signaling.send({ type: "offer", offer: this.pc.localDescription });
+    this.signaling.send({ type: "offer", offer: this.pc.localDescription, targetId: this.targetId } as any);
   }
 
   private async handleOffer(offer: RTCSessionDescriptionInit) {
@@ -105,7 +121,7 @@ export class WebRTCPeerConnection {
 
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
-    this.signaling.send({ type: "answer", answer: this.pc.localDescription });
+    this.signaling.send({ type: "answer", answer: this.pc.localDescription, targetId: this.targetId } as any);
   }
 
   private async handleAnswer(answer: RTCSessionDescriptionInit) {

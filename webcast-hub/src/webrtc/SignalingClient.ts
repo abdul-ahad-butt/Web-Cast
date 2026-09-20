@@ -6,12 +6,27 @@ export type SignalingMessage =
   | { type: "media-pause" }
   | { type: "media-seek"; time: number }
   | { type: "sender-joined" }
+  | { type: "receiver-joined"; receiverId: string }
   | { type: "sender-disconnected" }
-  | { type: "offer"; offer: any }
-  | { type: "answer"; answer: any }
-  | { type: "ice-candidate"; candidate: any }
+  | { type: "peer-left"; role: string; clientId?: string }
+  | { type: "room-state"; senderPresent: boolean; receiverCount: number; yourClientId: string }
+  | { type: "request-offer"; receiverId?: string; senderId?: string }
+  | { type: "offer"; offer: any; targetId?: string; senderId?: string }
+  | { type: "answer"; answer: any; targetId?: string; receiverId?: string }
+  | { type: "ice-candidate"; candidate: any; targetId?: string; senderId?: string; receiverId?: string }
+  | { type: "error"; reason: string }
   | { type: "ping" }
   | { type: "pong" };
+
+const instances = new Map<string, SignalingClient>();
+
+export function getGlobalSignaling(roomId: string, clientType: ClientType, token?: string): SignalingClient {
+  const key = `${roomId}-${clientType}`;
+  if (!instances.has(key)) {
+    instances.set(key, new SignalingClient(roomId, clientType, token));
+  }
+  return instances.get(key)!;
+}
 
 export class SignalingClient {
   private ws: WebSocket | null = null;
@@ -24,9 +39,16 @@ export class SignalingClient {
   public onConnect?: () => void;
   public onDisconnect?: () => void;
   public onError?: (error: any) => void;
+  
   private pingInterval?: ReturnType<typeof setInterval>;
+  private reconnectTimeout?: ReturnType<typeof setTimeout>;
+  private reconnectAttempts = 0;
+  private isSuspended = false;
+  private intendedState: "connected" | "disconnected" = "disconnected";
+  public clientId: string;
 
   constructor(roomId: string, clientType: ClientType, token?: string) {
+    this.clientId = crypto.randomUUID();
     this.roomId = roomId;
     this.clientType = clientType;
     let baseUrl = "wss://webcast-hub.abdulahadbutt420.workers.dev";
@@ -49,24 +71,60 @@ export class SignalingClient {
     
     // Remove trailing slash if present
     baseUrl = baseUrl.replace(/\/$/, "");
-    this.url = `${baseUrl}/api/rooms/${roomId}/ws?type=${clientType}`;
+    this.url = `${baseUrl}/api/rooms/${roomId}/ws?type=${clientType}&clientId=${this.clientId}`;
     if (token) {
       this.url += `&token=${token}`;
     }
+
+    this.setupLifecycle();
+  }
+
+  private setupLifecycle() {
+    if (typeof window === 'undefined') return;
+
+    window.addEventListener('pagehide', (e) => {
+      this.isSuspended = true;
+      if (this.ws) {
+        // Code 1000 for normal closure
+        this.ws.close(1000, "pagehide");
+        this.ws = null;
+      }
+    });
+
+    window.addEventListener('pageshow', (e) => {
+      this.isSuspended = false;
+      if (e.persisted && this.intendedState === "connected") {
+        this.connect();
+      }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && this.intendedState === "connected" && !this.isOpen()) {
+        this.isSuspended = false;
+        this.connect();
+      }
+    });
   }
 
   connect() {
+    if (this.isOpen()) return;
+    this.intendedState = "connected";
+    this.isSuspended = false;
+    
+    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+    
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
-      console.log(`[Signaling] Connected as ${this.clientType}`);
+      console.log(`[Signaling] Connected as ${this.clientType} (${this.clientId})`);
+      this.reconnectAttempts = 0;
       
-      // Keep connection alive
+      // Keep connection alive (app-level ping every 20s)
       this.pingInterval = setInterval(() => {
         if (this.isOpen()) {
           this.send({ type: "ping" });
         }
-      }, 30000);
+      }, 20000);
 
       this.onConnect?.();
     };
@@ -82,11 +140,15 @@ export class SignalingClient {
       }
     };
 
-    this.ws.onclose = () => {
-      console.log("[Signaling] Disconnected");
+    this.ws.onclose = (event) => {
+      console.log(`[Signaling] Disconnected: code ${event.code}`);
       if (this.pingInterval) clearInterval(this.pingInterval);
-      this.onDisconnect?.();
       this.ws = null;
+      this.onDisconnect?.();
+
+      if (!this.isSuspended && this.intendedState === "connected") {
+        this.scheduleReconnect();
+      }
     };
 
     this.ws.onerror = (error) => {
@@ -94,6 +156,22 @@ export class SignalingClient {
       if (this.pingInterval) clearInterval(this.pingInterval);
       this.onError?.(error);
     };
+  }
+
+  private scheduleReconnect() {
+    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+    
+    // Exponential backoff with jitter
+    const baseDelay = Math.min(10000, 500 * Math.pow(1.5, this.reconnectAttempts));
+    const jitter = Math.random() * 500;
+    const delay = baseDelay + jitter;
+    
+    console.log(`[Signaling] Reconnecting in ${Math.round(delay)}ms... (Attempt ${this.reconnectAttempts + 1})`);
+    
+    this.reconnectTimeout = setTimeout(() => {
+      this.reconnectAttempts++;
+      this.connect();
+    }, delay);
   }
 
   send(data: SignalingMessage) {
@@ -105,9 +183,11 @@ export class SignalingClient {
   }
 
   disconnect() {
+    this.intendedState = "disconnected";
+    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
     if (this.pingInterval) clearInterval(this.pingInterval);
     if (this.ws) {
-      this.ws.close();
+      this.ws.close(1000, "Intentional disconnect");
       this.ws = null;
     }
   }
