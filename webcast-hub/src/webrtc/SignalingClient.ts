@@ -12,12 +12,18 @@ export class SignalingClient {
 
   constructor(roomId: string, clientType: ClientType) {
     this.clientType = clientType;
-    let baseUrl = "wss://webcast-hub-api.abdulahadbutt420.workers.dev";
+    let baseUrl = "wss://webcast-hub.abdulahadbutt420.workers.dev";
     
     try {
-      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_WS_URL) {
-        baseUrl = import.meta.env.VITE_WS_URL;
-      } else if (typeof window !== 'undefined' && window.location.hostname === "localhost") {
+      if (typeof import.meta !== 'undefined' && import.meta.env) {
+        if (import.meta.env.VITE_WS_URL) {
+          baseUrl = import.meta.env.VITE_WS_URL;
+        } else if (import.meta.env.VITE_API_URL) {
+          baseUrl = import.meta.env.VITE_API_URL.replace("https://", "wss://").replace("http://", "ws://");
+        }
+      }
+      
+      if (typeof window !== 'undefined' && window.location.hostname === "localhost" && !import.meta.env?.VITE_WS_URL && !import.meta.env?.VITE_API_URL) {
         baseUrl = "ws://localhost:8787";
       }
     } catch (e) {

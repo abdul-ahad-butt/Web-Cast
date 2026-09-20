@@ -14,9 +14,9 @@ export default function Dashboard() {
 
   const generateRoom = async () => {
     try {
-      let baseUrl = import.meta.env.VITE_WS_URL || "wss://webcast-hub-api.abdulahadbutt420.workers.dev";
-      if (!import.meta.env.VITE_WS_URL && window.location.hostname === "localhost") baseUrl = "ws://localhost:8787";
-      baseUrl = baseUrl.replace("wss://", "https://").replace("ws://", "http://").replace(/\/$/, "");
+      let baseUrl = import.meta.env.VITE_API_URL || "https://webcast-hub.abdulahadbutt420.workers.dev";
+      if (!import.meta.env.VITE_API_URL && window.location.hostname === "localhost") baseUrl = "http://localhost:8787";
+      baseUrl = baseUrl.replace(/\/$/, "");
       
       const res = await fetch(`${baseUrl}/api/rooms`, { method: "POST" });
       const data = await res.json();
@@ -44,9 +44,9 @@ export default function Dashboard() {
     if (file.type.startsWith("video/") || file.type.startsWith("image/")) {
       setStatus(`Uploading ${file.name}...`);
       try {
-        let baseUrl = import.meta.env.VITE_WS_URL || "wss://webcast-hub-api.abdulahadbutt420.workers.dev";
-        if (!import.meta.env.VITE_WS_URL && window.location.hostname === "localhost") baseUrl = "ws://localhost:8787";
-        baseUrl = baseUrl.replace("wss://", "https://").replace("ws://", "http://").replace(/\/$/, "");
+        let baseUrl = import.meta.env.VITE_API_URL || "https://webcast-hub.abdulahadbutt420.workers.dev";
+        if (!import.meta.env.VITE_API_URL && window.location.hostname === "localhost") baseUrl = "http://localhost:8787";
+        baseUrl = baseUrl.replace(/\/$/, "");
         
         const res = await fetch(`${baseUrl}/api/rooms/${roomId}/upload`, {
           method: "POST",

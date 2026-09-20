@@ -85,6 +85,12 @@ export default {
       return stub.fetch(request);
     }
 
+    if (url.pathname === "/" && request.method === "GET") {
+      return new Response(JSON.stringify({ ok: true, service: "webcast-hub-backend" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     return new Response("Not Found", { status: 404, headers: corsHeaders });
   },
 };
