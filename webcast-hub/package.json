@@ -21,10 +21,12 @@
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.56.0",
     "@cloudflare/workers-types": "^5.20260919.1",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.6.2",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.2.7",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
     "autoprefixer": "^10.6.1",
     "oxlint": "^1.81.0",
@@ -32,6 +34,7 @@
     "tailwindcss": "^4.0.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",
-    "wrangler": "^4.135.0"
+    "wrangler": "^4.135.0",
+    "ws": "^8.21.3"
   }
 }

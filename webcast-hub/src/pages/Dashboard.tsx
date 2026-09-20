@@ -5,20 +5,24 @@ import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
 
 export default function Dashboard() {
   const [roomId, setRoomId] = useState<string>("");
-  const [ownerToken, setOwnerToken] = useState<string>("");
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [status, setStatus] = useState<string>("Not Connected");
   const [mediaInfo, setMediaInfo] = useState<{filename: string, resolution: string} | null>(null);
   const [receiverCount, setReceiverCount] = useState<number>(0);
+  const [connectedCount, setConnectedCount] = useState<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const signalingRef = useRef<SignalingClient | null>(null);
   const pcMapRef = useRef<Map<string, WebRTCPeerConnection>>(new Map());
   const activeStreamRef = useRef<MediaStream | null>(null);
+  const isStartingCastRef = useRef<boolean>(false);
+  const receiverSessionMapRef = useRef<Map<string, string>>(new Map());
   const lastNegotiation = useRef<Map<string, number>>(new Map());
+  const knownReceiversRef = useRef<Set<string>>(new Set());
   const unsubsRef = useRef<(() => void)[]>([]);
 
   useEffect(() => {
+    console.log("[App] role=sender build=2026-09-20-round3");
     return () => {
       // Cleanup on unmount
       unsubsRef.current.forEach(unsub => unsub());
@@ -33,22 +37,52 @@ export default function Dashboard() {
     };
   }, []);
 
-  const startNegotiation = useCallback(async (receiverId: string) => {
+  const startNegotiation = useCallback(async (receiverId: string, reqSessionId?: string) => {
     const now = Date.now();
     const last = lastNegotiation.current.get(receiverId) || 0;
-    if (now - last < 3000) {
-      console.log(`[Sender] Debouncing negotiation for ${receiverId}`);
-      return;
+    
+    let pc = pcMapRef.current.get(receiverId);
+
+    const oldSessionId = receiverSessionMapRef.current.get(receiverId);
+    let sessionChanged = false;
+    if (reqSessionId && oldSessionId && reqSessionId !== oldSessionId) {
+      sessionChanged = true;
     }
-    lastNegotiation.current.set(receiverId, now);
+    if (reqSessionId) {
+      receiverSessionMapRef.current.set(receiverId, reqSessionId);
+    }
+
+    if (pc) {
+      const state = pc.pc.connectionState;
+      if (sessionChanged || state === "failed" || ((state === "new" || state === "connecting") && now - last >= 10000)) {
+        console.log(`[Sender] Rebuilding peer connection for ${receiverId} (sessionChanged=${sessionChanged})`);
+        pc.close();
+        pcMapRef.current.delete(receiverId);
+        pc = undefined;
+      } else if ((state === "new" || state === "connecting") && (now - last < 4000)) {
+        console.log(`[Sender] Debouncing negotiation for ${receiverId}`);
+        return;
+      } else if (state === "new" || state === "connecting") {
+        console.log(`[Sender] Resending offer for ${receiverId}`);
+        lastNegotiation.current.set(receiverId, Date.now());
+        pc.resendOffer();
+        return;
+      }
+    }
 
     if (!activeStreamRef.current || !signalingRef.current) return;
     
-    let pc = pcMapRef.current.get(receiverId);
     if (!pc) {
       pc = new WebRTCPeerConnection(signalingRef.current, receiverId);
+      pc.onConnectionStateChange = () => {
+         let count = 0;
+         pcMapRef.current.forEach(p => { if (p.pc.connectionState === 'connected') count++; });
+         setConnectedCount(count);
+      };
       pcMapRef.current.set(receiverId, pc);
     }
+
+    lastNegotiation.current.set(receiverId, Date.now());
     
     // Safety clear tracks if changing source
     const senders = pc.pc.getSenders();
@@ -61,55 +95,69 @@ export default function Dashboard() {
     await pc.createOffer();
   }, []);
 
+  const setupSignaling = (rId: string, tok: string) => {
+    if (signalingRef.current) {
+      unsubsRef.current.forEach(unsub => unsub());
+      unsubsRef.current = [];
+      signalingRef.current.disconnect();
+    }
+
+    const signaling = getGlobalSignaling(rId, "sender", tok);
+    signalingRef.current = signaling;
+    
+    unsubsRef.current.push(signaling.on((msg) => {
+      if (msg.type === "room-state") {
+        setReceiverCount(msg.receiverCount);
+      } else if (msg.type === "receiver-joined") {
+        setReceiverCount(prev => prev + 1);
+        knownReceiversRef.current.add(msg.receiverId!);
+        startNegotiation(msg.receiverId!);
+      } else if (msg.type === "peer-left" && msg.role === "receiver") {
+        setReceiverCount(prev => Math.max(0, prev - 1));
+        if (msg.clientId) knownReceiversRef.current.delete(msg.clientId);
+        if (msg.clientId && pcMapRef.current.has(msg.clientId)) {
+          pcMapRef.current.get(msg.clientId)?.close();
+          pcMapRef.current.delete(msg.clientId);
+          lastNegotiation.current.delete(msg.clientId);
+        }
+        let count = 0;
+        pcMapRef.current.forEach(p => { if (p.pc.connectionState === 'connected') count++; });
+        setConnectedCount(count);
+      } else if (msg.type === "request-offer") {
+        knownReceiversRef.current.add(msg.receiverId!);
+        startNegotiation(msg.receiverId!, msg.sessionId);
+      } else if (msg.type as any === "delivery-failed") {
+        const failedMsg = msg as any;
+        if (failedMsg.to) lastNegotiation.current.delete(failedMsg.to);
+      }
+    }));
+
+    signaling.onConnect = () => {
+      setStatus("Waiting for receiver...");
+      setIsConnected(true);
+      if (activeStreamRef.current) {
+        pcMapRef.current.forEach((_, recId) => startNegotiation(recId));
+      }
+    };
+    signaling.onDisconnect = () => {
+      setIsConnected(false);
+      setStatus("Not Connected");
+      setConnectedCount(0);
+    };
+    signaling.connect();
+  };
+
   const generateRoom = async () => {
     try {
       let baseUrl = import.meta.env.VITE_API_URL || "https://webcast-hub.abdulahadbutt420.workers.dev";
-      if (!import.meta.env.VITE_API_URL && window.location.hostname === "localhost") baseUrl = "http://localhost:8787";
+      if (!import.meta.env.VITE_API_URL && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) baseUrl = "http://127.0.0.1:8787";
       baseUrl = baseUrl.replace(/\/$/, "");
       
       const res = await fetch(`${baseUrl}/api/rooms`, { method: "POST" });
       const data = await res.json();
       setRoomId(data.roomId);
-      setOwnerToken(data.ownerToken);
       
-      // Disconnect old socket if it exists
-      if (signalingRef.current) {
-        unsubsRef.current.forEach(unsub => unsub());
-        unsubsRef.current = [];
-        signalingRef.current.disconnect();
-      }
-
-      // Connect to signaling immediately so the receiver sees the sender is ready
-      const signaling = getGlobalSignaling(data.roomId, "sender", data.ownerToken);
-      signalingRef.current = signaling;
-      
-      unsubsRef.current.push(signaling.on((msg) => {
-        if (msg.type === "room-state") {
-          setReceiverCount(msg.receiverCount);
-        } else if (msg.type === "receiver-joined") {
-          setReceiverCount(prev => prev + 1);
-          startNegotiation(msg.receiverId!);
-        } else if (msg.type === "peer-left" && msg.role === "receiver") {
-          setReceiverCount(prev => Math.max(0, prev - 1));
-          if (msg.clientId && pcMapRef.current.has(msg.clientId)) {
-            pcMapRef.current.get(msg.clientId)?.close();
-            pcMapRef.current.delete(msg.clientId);
-            lastNegotiation.current.delete(msg.clientId);
-          }
-        } else if (msg.type === "request-offer") {
-          startNegotiation(msg.receiverId!);
-        }
-      }));
-
-      signaling.onConnect = () => {
-        setStatus("Waiting for receiver...");
-        setIsConnected(true);
-      };
-      signaling.onDisconnect = () => {
-        setIsConnected(false);
-        setStatus("Not Connected");
-      };
-      signaling.connect();
+      setupSignaling(data.roomId, data.ownerToken);
     } catch (e) {
       console.error(e);
       setRoomId(Math.random().toString(36).substring(2, 6).toUpperCase());
@@ -119,17 +167,45 @@ export default function Dashboard() {
 
 
 
+
+
   const handleCastChromeTab = async () => {
     if (!roomId) {
       alert("Please generate or enter a room ID first");
       return;
     }
+    if (isStartingCastRef.current) return;
+    isStartingCastRef.current = true;
+    
+    let stream: MediaStream;
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { width: { ideal: 3840, max: 3840 }, height: { ideal: 2160, max: 2160 }, frameRate: { ideal: 60, max: 60 } },
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 30 } },
         audio: true
       });
-      
+      // Check if actual stream returned is larger than 1080p, and apply constraints if needed
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        const settings = videoTrack.getSettings();
+        if ((settings.height && settings.height > 1080) || (settings.width && settings.width > 1920)) {
+          console.log(`[Sender] Downscaling screen capture from ${settings.width}x${settings.height} to 1080p limit`);
+          try {
+            await videoTrack.applyConstraints({ width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 30 } });
+          } catch (e) {
+            console.warn("[Sender] applyConstraints failed, proceeding anyway", e);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Screen capture failed", err);
+      if (!activeStreamRef.current) {
+        setStatus("Screen capture cancelled or failed.");
+      }
+      isStartingCastRef.current = false;
+      return;
+    }
+
+    try {
       // Stop old tracks if they exist
       if (activeStreamRef.current) {
         activeStreamRef.current.getTracks().forEach(t => t.stop());
@@ -138,32 +214,26 @@ export default function Dashboard() {
       pcMapRef.current.forEach(pc => pc.close());
       pcMapRef.current.clear();
       lastNegotiation.current.clear();
+      receiverSessionMapRef.current.clear();
       
       activeStreamRef.current = stream;
       setStatus("Casting screen...");
-      setMediaInfo({ filename: "Screen Capture", resolution: "4K" }); 
+      setMediaInfo({ filename: "Screen Capture", resolution: "1080p" }); 
       setIsConnected(true);
       
-      if (signalingRef.current) {
-        unsubsRef.current.forEach(unsub => unsub());
-        unsubsRef.current = [];
-        signalingRef.current.disconnect();
-      }
-      signalingRef.current = getGlobalSignaling(roomId, "sender", ownerToken);
-      signalingRef.current.connect();
-      
-      // Negotiate with existing receivers
-      signalingRef.current.send({ type: "ping" } as any); // To get room-state or wake up receivers? Actually let them request-offer
+      console.log("[Sender] Triggering negotiation for known receivers");
+      knownReceiversRef.current.forEach(recId => {
+        startNegotiation(recId);
+      });
       
       stream.getVideoTracks()[0].onended = () => {
         stopCasting();
       };
-      
     } catch (err) {
-      console.error("Screen capture failed", err);
-      if (!activeStreamRef.current) {
-        setStatus("Screen capture cancelled or failed.");
-      }
+      console.error("Error setting up cast session", err);
+      setStatus("Error setting up cast session.");
+    } finally {
+      isStartingCastRef.current = false;
     }
   };
 
@@ -173,6 +243,7 @@ export default function Dashboard() {
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    console.log("[Sender] handleFileChange called, file present:", !!file);
     if (!file) return;
 
     if (!roomId) {
@@ -187,9 +258,12 @@ export default function Dashboard() {
       const url = URL.createObjectURL(file);
       videoRef.current.src = url;
       
-      await new Promise(resolve => {
+      await new Promise((resolve, reject) => {
         if (!videoRef.current) return resolve(null);
         videoRef.current.onloadedmetadata = resolve;
+        videoRef.current.onerror = reject;
+      }).catch(err => {
+        console.error("[Sender] Error loading video metadata:", err);
       });
 
       let resolution = `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`;
@@ -207,19 +281,27 @@ export default function Dashboard() {
         return;
       }
 
+      console.log("[Sender] Autoplay attempted. Checking captureStream API...");
       // Feature detect captureStream
       const captureStream = (videoRef.current as any).captureStream || (videoRef.current as any).mozCaptureStream;
       if (!captureStream) {
+        console.error("[Sender] captureStream API is missing!");
         alert("Your browser does not support capturing video streams (captureStream API).");
         URL.revokeObjectURL(url);
         return;
       }
 
+      console.log("[Sender] Getting captureStream");
       const stream: MediaStream = captureStream.call(videoRef.current);
+      console.log("[Sender] Stream tracks:", stream.getTracks().length);
       if (stream.getVideoTracks().length === 0) {
+        console.log("[Sender] Waiting for video track...");
         await new Promise(resolve => {
           stream.onaddtrack = () => resolve(null);
+          // Also set a timeout just in case
+          setTimeout(() => resolve(null), 2000);
         });
+        console.log("[Sender] Video track wait finished. Tracks:", stream.getTracks().length);
       }
 
       // Stop old tracks if they exist
@@ -235,13 +317,10 @@ export default function Dashboard() {
       setStatus(`Casting Local Media`);
       setIsConnected(true);
 
-      if (signalingRef.current) {
-        unsubsRef.current.forEach(unsub => unsub());
-        unsubsRef.current = [];
-        signalingRef.current.disconnect();
-      }
-      signalingRef.current = getGlobalSignaling(roomId, "sender", ownerToken);
-      signalingRef.current.connect();
+      console.log("[Sender] Triggering negotiation for known receivers");
+      knownReceiversRef.current.forEach(recId => {
+        startNegotiation(recId);
+      });
       
     } else {
       alert("Only video/image casting is implemented for now");
@@ -254,6 +333,7 @@ export default function Dashboard() {
     pcMapRef.current.forEach(pc => pc.close());
     pcMapRef.current.clear();
     lastNegotiation.current.clear();
+    receiverSessionMapRef.current.clear();
     
     if (activeStreamRef.current) {
       activeStreamRef.current.getTracks().forEach(track => track.stop());
@@ -268,6 +348,7 @@ export default function Dashboard() {
     
     setIsConnected(false);
     setStatus("Not Connected");
+    setConnectedCount(0);
     setMediaInfo(null);
   };
 
@@ -306,7 +387,7 @@ export default function Dashboard() {
 
       <input type="file" ref={fileInputRef} className="hidden" accept="video/*,image/*" onChange={handleFileChange} />
       {/* Must be played inline to capture stream properly. Cannot be display:none, so we visually hide it instead. */}
-      <video ref={videoRef} className="fixed -top-[9999px] -left-[9999px] opacity-0 pointer-events-none" controls muted playsInline />
+      <video ref={videoRef} className="fixed -top-[9999px] -left-[9999px] opacity-0 pointer-events-none" controls muted playsInline loop />
 
       <main className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
         <div onClick={handleCastChromeTab} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-blue-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
@@ -349,7 +430,12 @@ export default function Dashboard() {
               </div>
               <div>
                 <div className="flex items-center gap-3">
-                  <p className="font-semibold text-lg">{isConnected && receiverCount === 0 ? "Waiting for receiver..." : status}</p>
+                  <p className="font-semibold text-lg">
+                    {!isConnected ? status : 
+                     receiverCount === 0 ? "Waiting for receiver..." : 
+                     connectedCount > 0 ? `Casting to ${receiverCount} receiver(s)` : 
+                     `Connecting to ${receiverCount} receiver(s)...`}
+                  </p>
                   {(mediaInfo?.resolution === "4K" || mediaInfo?.resolution === "2160p") && (
                     <span className="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 uppercase tracking-wider">4K UHD</span>
                   )}
@@ -370,7 +456,7 @@ export default function Dashboard() {
             </button>
           </div>
 
-          {isConnected && (
+          {isConnected && mediaInfo?.filename !== "Screen Capture" && (
             <div className="flex gap-4 border-t border-white/5 pt-6 mt-2 relative z-10">
               <button onClick={() => videoRef.current?.play()} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2.5 rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:-translate-y-0.5 transition-all font-medium">Play</button>
               <button onClick={() => videoRef.current?.pause()} className="bg-secondary/80 hover:bg-secondary border border-white/5 px-6 py-2.5 rounded-lg hover:-translate-y-0.5 transition-all font-medium">Pause</button>

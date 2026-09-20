@@ -15,6 +15,7 @@ export default function Receiver() {
   const [hasMedia, setHasMedia] = useState<boolean>(false);
   const [senderConnected, setSenderConnected] = useState<boolean>(false);
   const [needsUserInteraction, setNeedsUserInteraction] = useState<boolean>(false);
+  const [showRetry, setShowRetry] = useState<boolean>(false);
   
   // Custom Player States
   const [isPlaying, setIsPlaying] = useState(false);
@@ -83,6 +84,7 @@ export default function Receiver() {
   };
 
   useEffect(() => {
+    console.log("[App] role=receiver build=2026-09-20-round3");
     if (!roomId) return;
 
     setStatus("Connecting to signaling server...");
@@ -91,30 +93,66 @@ export default function Receiver() {
 
     const mediaStream = new MediaStream();
 
+    let isSenderPresent = false;
+    let retryCount = 0;
+    let offerTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const stopOfferLoop = () => {
+      if (offerTimeout) clearTimeout(offerTimeout);
+      setShowRetry(false);
+    };
+
+    const requestOfferLoop = () => {
+      if (offerTimeout) clearTimeout(offerTimeout);
+      if (!isSenderPresent) return;
+      signaling.send({ type: "request-offer", receiverId: signaling.clientId, sessionId: signaling.sessionId } as any);
+      retryCount++;
+      
+      if (retryCount >= 5) {
+        setShowRetry(true);
+        setStatus("Sender present but not responding...");
+      }
+      
+      const nextDelay = retryCount <= 10 ? 3000 : 10000;
+      offerTimeout = setTimeout(requestOfferLoop, nextDelay);
+    };
+
+    const startOfferLoop = () => {
+      retryCount = 0;
+      setShowRetry(false);
+      requestOfferLoop();
+    };
+
     signaling.onConnect = () => {
       setStatus("Waiting for sender...");
     };
 
     const unsub = signaling.on((msg) => {
       if (msg.type === "room-state") {
-        if (msg.senderPresent) {
-          setSenderConnected(true);
+        isSenderPresent = msg.senderPresent || false;
+        setSenderConnected(isSenderPresent);
+        if (isSenderPresent) {
           setStatus("Sender present. Requesting stream...");
-          signaling.send({ type: "request-offer", receiverId: signaling.clientId } as any);
+          startOfferLoop();
         } else {
-          setSenderConnected(false);
           setStatus("Waiting for sender...");
+          stopOfferLoop();
         }
       } else if (msg.type === "sender-joined") {
+        isSenderPresent = true;
         setSenderConnected(true);
         setStatus("Sender joined. Requesting stream...");
         // Clear previous tracks
         mediaStream.getTracks().forEach(t => mediaStream.removeTrack(t));
-        signaling.send({ type: "request-offer", receiverId: signaling.clientId } as any);
+        startOfferLoop();
       } else if (msg.type === "peer-left" && msg.role === "sender") {
+        isSenderPresent = false;
         setSenderConnected(false);
         setHasMedia(false);
         setStatus("Sender disconnected. Waiting...");
+        stopOfferLoop();
+      } else if (msg.type === "offer") {
+        stopOfferLoop();
       } else if (msg.type === "media-url") {
         if (videoRef.current) {
           videoRef.current.srcObject = null;
@@ -164,9 +202,15 @@ export default function Receiver() {
       setWebrtcState(state);
       if (state === "disconnected" || state === "failed") {
         setStatus("Stream disconnected / Reconnecting...");
+        if (isSenderPresent) startOfferLoop();
       } else if (state === "connected") {
         setStatus("");
+        stopOfferLoop();
       }
+    };
+
+    (window as any)._manualRetryOffer = () => {
+      if (isSenderPresent) startOfferLoop();
     };
 
     signaling.connect();
@@ -174,6 +218,8 @@ export default function Receiver() {
     return () => {
       unsub();
       peer.close();
+      stopOfferLoop();
+      delete (window as any)._manualRetryOffer;
     };
   }, [roomId]);
 
@@ -328,6 +374,18 @@ export default function Receiver() {
                 <div className={`w-3 h-3 rounded-full ${senderConnected ? 'bg-emerald-400 animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.8)]' : 'bg-red-500'}`}></div>
                 <span className="text-sm font-medium tracking-wide">{senderConnected ? "Sender Connected" : "Awaiting Sender"}</span>
               </div>
+              
+              {showRetry && !hasMedia && senderConnected && (
+                <div className="mt-8 flex justify-center animate-fade-in">
+                  <button 
+                    onClick={() => (window as any)._manualRetryOffer?.()}
+                    className="bg-blue-600/80 hover:bg-blue-500 text-white px-8 py-2.5 rounded-full font-medium transition-all shadow-[0_0_15px_rgba(37,99,235,0.4)] flex items-center gap-2"
+                  >
+                    <Loader2 className="w-4 h-4 animate-spin hidden" />
+                    Retry Connection
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </>

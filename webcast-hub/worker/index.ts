@@ -23,8 +23,9 @@ export default {
     try {
       // Route: /api/rooms - Create a new room
       if (url.pathname === "/api/rooms" && request.method === "POST") {
-        // Generate a simple short room ID (A-Z0-9)
-        const roomId = Array.from({length: 4}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[Math.floor(Math.random() * 36)]).join('');
+        // Generate a simple short room ID (excluding 0, O, 1, I, L)
+        const charset = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+        const roomId = Array.from({length: 4}, () => charset[Math.floor(Math.random() * charset.length)]).join('');
         
         const id = env.CAST_ROOM.idFromName(roomId);
         const stub = env.CAST_ROOM.get(id);
@@ -195,6 +196,12 @@ export default {
 
         // Forward the request to the Durable Object
         return stub.fetch(request);
+      }
+
+      if (url.pathname === "/api/version" && request.method === "GET") {
+        return new Response(JSON.stringify({ version: "2026-09-20-round3" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
       if (url.pathname === "/" && request.method === "GET") {

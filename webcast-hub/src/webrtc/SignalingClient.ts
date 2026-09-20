@@ -17,33 +17,43 @@ export type SignalingMessage = { clientId?: string; targetId?: string; sessionId
   | { type: "error"; reason: string }
   | { type: "ping" }
   | { type: "pong" }
+  | { type: "cast-stopped" }
 );
 
-const instances = new Map<string, SignalingClient>();
+interface QueuedMessage {
+  data: SignalingMessage;
+  timestamp: number;
+}
+
+if (typeof window !== "undefined") {
+  (window as any).__wc = { openSockets: 0, socketSeq: 0 };
+}
+
+let activeSignalingClient: SignalingClient | null = null;
 
 export function getGlobalSignaling(roomId: string, clientType: ClientType, token?: string): SignalingClient {
-  const key = `${roomId}-${clientType}`;
-  if (!instances.has(key)) {
-    instances.set(key, new SignalingClient(roomId, clientType, token));
+  if (activeSignalingClient) {
+    if (activeSignalingClient.roomId === roomId && activeSignalingClient.clientType === clientType) {
+      return activeSignalingClient;
+    }
+    // Room or role changed, kill old singleton
+    activeSignalingClient.disconnect();
   }
-  return instances.get(key)!;
+  
+  activeSignalingClient = new SignalingClient(roomId, clientType, token);
+  return activeSignalingClient;
 }
 
 export class SignalingClient {
   private ws: WebSocket | null = null;
-  private url: string;
-  private clientType: ClientType;
-  
+  private _url: string;
+  public clientType: ClientType;
   public roomId: string;
+  public clientId: string;
+  public sessionId: string;
   
   private messageListeners = new Set<(data: SignalingMessage) => void>();
   
-  public on(handler: (data: SignalingMessage) => void): () => void {
-    this.messageListeners.add(handler);
-    return () => {
-      this.messageListeners.delete(handler);
-    };
-  }
   public onConnect?: () => void;
   public onDisconnect?: () => void;
   public onError?: (error: any) => void;
@@ -53,38 +63,60 @@ export class SignalingClient {
   private reconnectAttempts = 0;
   private isSuspended = false;
   private intendedState: "connected" | "disconnected" = "disconnected";
-  public clientId: string;
+  
+  private sendQueue: QueuedMessage[] = [];
 
   constructor(roomId: string, clientType: ClientType, token?: string) {
-    this.clientId = crypto.randomUUID();
     this.roomId = roomId;
     this.clientType = clientType;
-    let baseUrl = "wss://webcast-hub.abdulahadbutt420.workers.dev";
     
+    // Retrieve or generate clientId/token from sessionStorage
+    const storageKey = `wc_${roomId}_${clientType}`;
+    let stored = sessionStorage.getItem(storageKey);
+    let sessionData: { clientId: string; token?: string };
+    
+    if (stored) {
+      sessionData = JSON.parse(stored);
+      // Ensure we use the provided token if it's new (e.g. sender just created room)
+      if (token && sessionData.token !== token) {
+        sessionData.token = token;
+        sessionStorage.setItem(storageKey, JSON.stringify(sessionData));
+      }
+    } else {
+      sessionData = { clientId: crypto.randomUUID(), token };
+      sessionStorage.setItem(storageKey, JSON.stringify(sessionData));
+    }
+    
+    this.clientId = sessionData.clientId;
+    this.sessionId = crypto.randomUUID();
+
+    let baseUrl = "wss://webcast-hub.abdulahadbutt420.workers.dev";
     try {
       if (typeof import.meta !== 'undefined' && import.meta.env) {
-        if (import.meta.env.VITE_WS_URL) {
-          baseUrl = import.meta.env.VITE_WS_URL;
-        } else if (import.meta.env.VITE_API_URL) {
-          baseUrl = import.meta.env.VITE_API_URL.replace("https://", "wss://").replace("http://", "ws://");
-        }
+        if (import.meta.env.VITE_WS_URL) baseUrl = import.meta.env.VITE_WS_URL;
+        else if (import.meta.env.VITE_API_URL) baseUrl = import.meta.env.VITE_API_URL.replace("https://", "wss://").replace("http://", "ws://");
       }
-      
-      if (typeof window !== 'undefined' && window.location.hostname === "localhost" && !import.meta.env?.VITE_WS_URL && !import.meta.env?.VITE_API_URL) {
-        baseUrl = "ws://localhost:8787";
+      if (typeof window !== 'undefined' && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") && !import.meta.env?.VITE_WS_URL && !import.meta.env?.VITE_API_URL) {
+        baseUrl = "ws://127.0.0.1:8787";
       }
     } catch (e) {
       // Ignore
     }
     
-    // Remove trailing slash if present
     baseUrl = baseUrl.replace(/\/$/, "");
-    this.url = `${baseUrl}/api/rooms/${roomId}/ws?type=${clientType}&clientId=${this.clientId}`;
-    if (token) {
-      this.url += `&token=${token}`;
+    this._url = `${baseUrl}/api/rooms/${roomId}/ws?type=${clientType}&clientId=${this.clientId}`;
+    if (sessionData.token) {
+      this._url += `&token=${sessionData.token}`;
     }
 
     this.setupLifecycle();
+  }
+
+  public on(handler: (data: SignalingMessage) => void): () => void {
+    this.messageListeners.add(handler);
+    return () => {
+      this.messageListeners.delete(handler);
+    };
   }
 
   private setupLifecycle() {
@@ -93,9 +125,10 @@ export class SignalingClient {
     window.addEventListener('pagehide', () => {
       this.isSuspended = true;
       if (this.ws) {
-        // Code 1000 for normal closure
-        this.ws.close(1000, "pagehide");
+        const oldWs = this.ws;
         this.ws = null;
+        if ((window as any).__wc) (window as any).__wc.openSockets--;
+        oldWs.close(1000, "pagehide");
       }
     });
 
@@ -115,53 +148,94 @@ export class SignalingClient {
   }
 
   connect() {
-    if (this.isOpen()) return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
     this.intendedState = "connected";
     this.isSuspended = false;
     
-    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = undefined;
+    }
     
-    this.ws = new WebSocket(this.url);
+    if (this.ws) {
+      // Detach handlers before closing
+      this.ws.onopen = null;
+      this.ws.onclose = null;
+      this.ws.onmessage = null;
+      this.ws.onerror = null;
+      if ((window as any).__wc) (window as any).__wc.openSockets--;
+      this.ws.close(1000, "Replacing connection");
+      this.ws = null;
+    }
 
-    this.ws.onopen = () => {
-      console.log(`[Signaling] Connected as ${this.clientType} (${this.clientId})`);
+    if ((window as any).__wc) {
+      (window as any).__wc.openSockets++;
+      (window as any).__wc.socketSeq++;
+    }
+    const currentSeq = (window as any).__wc ? (window as any).__wc.socketSeq : 0;
+    
+    const ws = new WebSocket(this._url);
+    this.ws = ws;
+
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      console.log(`[Signaling] socket#${currentSeq} open`);
       this.reconnectAttempts = 0;
       
-      // Keep connection alive (app-level ping every 20s)
+      this.flushQueue();
+
+      if (this.pingInterval) clearInterval(this.pingInterval);
       this.pingInterval = setInterval(() => {
         if (this.isOpen()) {
-          this.send({ type: "ping" });
+          this.ws!.send(JSON.stringify({ type: "ping" }));
         }
       }, 20000);
 
       this.onConnect?.();
     };
 
-    this.ws.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
       try {
-        const data = JSON.parse(event.data);
+        const data = JSON.parse(event.data) as SignalingMessage;
         if (data.type === "pong" || data.type === "ping") return;
-        console.log(`[Signaling] Received:`, data.type);
         this.messageListeners.forEach(listener => listener(data));
       } catch (err) {
         console.error("[Signaling] Failed to parse message", err);
       }
     };
 
-    this.ws.onclose = (event) => {
-      console.log(`[Signaling] Disconnected: code ${event.code}`);
+    ws.onclose = (event) => {
+      if (this.ws !== ws) {
+        if ((window as any).__wc) (window as any).__wc.openSockets--;
+        return;
+      }
+      if ((window as any).__wc) (window as any).__wc.openSockets--;
+      console.log(`[Signaling] socket#${currentSeq} close(${event.code})`);
+      
       if (this.pingInterval) clearInterval(this.pingInterval);
       this.ws = null;
       this.onDisconnect?.();
+
+      if (event.code === 1000 || event.code === 4001) {
+        if (event.code === 4001) {
+          console.warn("[Signaling] Connection replaced (4001). Disabling auto-reconnect.");
+        }
+        this.intendedState = "disconnected";
+        return;
+      }
 
       if (!this.isSuspended && this.intendedState === "connected") {
         this.scheduleReconnect();
       }
     };
 
-    this.ws.onerror = (error) => {
-      console.error("[Signaling] WebSocket error", error);
-      if (this.pingInterval) clearInterval(this.pingInterval);
+    ws.onerror = (error) => {
+      if (this.ws !== ws) return;
+      console.error(`[Signaling] socket#${currentSeq} error`, error);
       this.onError?.(error);
     };
   }
@@ -169,7 +243,6 @@ export class SignalingClient {
   private scheduleReconnect() {
     if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
     
-    // Exponential backoff with jitter
     const baseDelay = Math.min(10000, 500 * Math.pow(1.5, this.reconnectAttempts));
     const jitter = Math.random() * 500;
     const delay = baseDelay + jitter;
@@ -182,11 +255,43 @@ export class SignalingClient {
     }, delay);
   }
 
-  send(data: SignalingMessage) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(data));
+  private flushQueue() {
+    const now = Date.now();
+    // Filter out messages older than 10s
+    this.sendQueue = this.sendQueue.filter(q => now - q.timestamp < 10000);
+    
+    if (this.sendQueue.length > 0) {
+      console.log(`[Signaling] flush n=${this.sendQueue.length}`);
+      while (this.sendQueue.length > 0) {
+        const msg = this.sendQueue.shift();
+        if (msg && this.ws) {
+          this.ws.send(JSON.stringify(msg.data));
+        }
+      }
+    }
+  }
+
+  send(data: SignalingMessage): boolean {
+    if (this.isOpen()) {
+      if (data.type !== "ping" && data.type !== "pong") {
+        console.log(`[Signaling] send type=${data.type}`);
+      }
+      this.ws!.send(JSON.stringify(data));
+      return true;
     } else {
-      console.warn("[Signaling] Cannot send message, WebSocket is not open");
+      if (data.type !== "ping" && data.type !== "pong") {
+        const now = Date.now();
+        this.sendQueue = this.sendQueue.filter(q => now - q.timestamp < 10000);
+        if (this.sendQueue.length < 50) {
+          console.log(`[Signaling] queued type=${data.type}`);
+          this.sendQueue.push({ data, timestamp: now });
+          return true;
+        } else {
+          console.warn("[Signaling] sendQueue full, dropping message");
+          return false;
+        }
+      }
+      return false;
     }
   }
 
@@ -195,8 +300,10 @@ export class SignalingClient {
     if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
     if (this.pingInterval) clearInterval(this.pingInterval);
     if (this.ws) {
-      this.ws.close(1000, "Intentional disconnect");
+      const oldWs = this.ws;
       this.ws = null;
+      if ((window as any).__wc) (window as any).__wc.openSockets--;
+      oldWs.close(1000, "Intentional disconnect");
     }
   }
 

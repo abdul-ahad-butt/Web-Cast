@@ -66,6 +66,7 @@ export class CastRoomDurableObject {
       const token = url.searchParams.get("token");
       const storedToken = await this.ctx.storage.get("ownerToken");
       if (!token || !storedToken || token !== storedToken) {
+        console.log(`[Worker] Auth failed. token=${token} storedToken=${storedToken}`);
         return new Response("Unauthorized sender", { status: 401 });
       }
     }
@@ -73,6 +74,21 @@ export class CastRoomDurableObject {
     const { 0: client, 1: server } = new WebSocketPair();
 
     const clientId = url.searchParams.get("clientId") || crypto.randomUUID();
+
+    console.log(`[Worker] Connect request type=${clientType} clientId=${clientId}`);
+
+    let isReplacement = false;
+    const existingWebsockets = this.ctx.getWebSockets();
+    for (const oldWs of existingWebsockets) {
+      const data = oldWs.deserializeAttachment() as ClientData;
+      if (data && data.clientId === clientId) {
+        isReplacement = true;
+        console.log(`[Worker] Replacing existing socket for ${clientId}`);
+        try {
+          oldWs.close(4001, "Replaced");
+        } catch (e) {}
+      }
+    }
 
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ type: clientType, clientId } as ClientData);
@@ -89,11 +105,14 @@ export class CastRoomDurableObject {
       yourClientId: clientId,
     }));
 
-    // Notify others
-    this.broadcast(JSON.stringify({
-      type: clientType === "sender" ? "sender-joined" : "receiver-joined",
-      receiverId: clientType === "receiver" ? clientId : undefined
-    }), server);
+    if (!isReplacement) {
+      // Notify others role-scoped
+      if (clientType === "sender") {
+        this.broadcastToRole("receiver", JSON.stringify({ type: "sender-joined" }));
+      } else {
+        this.broadcastToRole("sender", JSON.stringify({ type: "receiver-joined", receiverId: clientId }));
+      }
+    }
 
     return new Response(null, {
       status: 101,
@@ -116,17 +135,25 @@ export class CastRoomDurableObject {
 
       // Inject sender's clientId for targeted responses
       msg.clientId = session.clientId;
+      console.log(`[Worker] Message type=${msg.type} from=${session.clientId} to=${msg.targetId || 'all'}`);
 
       // Targeted routing based on targetId (if specified)
       if (msg.targetId) {
+        let delivered = false;
         const websockets = this.ctx.getWebSockets();
         for (const targetWs of websockets) {
           const targetSession = targetWs.deserializeAttachment() as ClientData;
           if (targetSession && targetSession.clientId === msg.targetId) {
             targetWs.send(JSON.stringify(msg));
-            return; // message delivered
+            delivered = true;
+            break;
           }
         }
+        if (!delivered) {
+          console.log(`[Worker] Delivery failed to ${msg.targetId}`);
+          ws.send(JSON.stringify({ type: "error", reason: "peer-not-connected", to: msg.targetId }));
+        }
+        return; // we handled this targeted message
       }
 
       // Explicit routing based on sender/receiver roles
@@ -142,16 +169,27 @@ export class CastRoomDurableObject {
         this.broadcast(JSON.stringify(msg), ws);
       }
     } catch (e) {
-      console.error("Invalid message format", e);
+      console.error("[Worker] Invalid message format", e);
     }
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean) {
-    this.handleDisconnect(ws);
+    try {
+      console.log(`[Worker] Close code=${code} reason=${reason}`);
+      if (code === 4001) return;
+      this.handleDisconnect(ws);
+    } catch (e) {
+      console.error("[Worker] Error in webSocketClose", e);
+    }
   }
 
   async webSocketError(ws: WebSocket, error: unknown) {
-    this.handleDisconnect(ws);
+    try {
+      console.error(`[Worker] Error`, error);
+      this.handleDisconnect(ws);
+    } catch (e) {
+      console.error("[Worker] Error in webSocketError", e);
+    }
   }
 
   handleDisconnect(ws: WebSocket) {
