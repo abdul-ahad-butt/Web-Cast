@@ -1,9 +1,11 @@
-import { SignalingClient } from "./SignalingClient";
+import { SignalingClient, type SignalingMessage } from "./SignalingClient";
 
 export class WebRTCPeerConnection {
-  private pc: RTCPeerConnection;
+  public pc: RTCPeerConnection;
   private signaling: SignalingClient;
-  private targetId?: string;
+  public targetId?: string;
+  public sessionId?: string;
+  private unsubscribe?: () => void;
   
   public onTrack?: (track: MediaStreamTrack, streams: readonly MediaStream[]) => void;
   public onDataChannel?: (channel: RTCDataChannel) => void;
@@ -11,9 +13,11 @@ export class WebRTCPeerConnection {
   
   private pendingCandidates: RTCIceCandidateInit[] = [];
 
-  constructor(signaling: SignalingClient, targetId?: string) {
+  constructor(signaling: SignalingClient, targetId?: string, sessionId?: string) {
     this.signaling = signaling;
     this.targetId = targetId;
+    this.sessionId = sessionId; // Receiver might receive it via offer, Sender generates it
+    
     this.pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
@@ -21,8 +25,13 @@ export class WebRTCPeerConnection {
     });
 
     this.pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        this.signaling.send({ type: "ice-candidate", candidate: event.candidate, targetId: this.targetId } as any);
+      if (event.candidate && this.sessionId) {
+        this.signaling.send({ 
+          type: "ice-candidate", 
+          candidate: event.candidate, 
+          targetId: this.targetId,
+          sessionId: this.sessionId
+        } as any);
       }
     };
 
@@ -39,39 +48,45 @@ export class WebRTCPeerConnection {
     };
 
     this.pc.oniceconnectionstatechange = () => {
-      // Sometimes ICE connection state detects drops faster than connection state
       if (this.pc.iceConnectionState === "disconnected" || this.pc.iceConnectionState === "failed") {
         this.onConnectionStateChange?.("disconnected");
       }
     };
 
-    // Handle incoming signaling messages
-    const existingOnMessage = this.signaling.onMessage;
-    this.signaling.onMessage = async (msg) => {
-      existingOnMessage?.(msg);
-      
+    this.unsubscribe = this.signaling.on(async (msg: SignalingMessage) => {
       try {
         if (msg.targetId && msg.targetId !== this.signaling.clientId) {
-          // Ignore messages not meant for this peer
+          return;
+        }
+        
+        // We only process targeted messages or specific negotiation messages from our target
+        if (this.targetId && msg.clientId && msg.clientId !== this.targetId) {
           return;
         }
 
         switch (msg.type) {
           case "offer":
-            if (!this.targetId && msg.clientId) {
-              this.targetId = msg.clientId;
-            }
+            if (!this.targetId && msg.clientId) this.targetId = msg.clientId;
+            if (msg.sessionId) this.sessionId = msg.sessionId;
             await this.handleOffer(msg.offer);
             break;
           case "answer":
-            if (!this.targetId && msg.clientId) {
-              this.targetId = msg.clientId;
+            if (!this.targetId && msg.clientId) this.targetId = msg.clientId;
+            if (msg.sessionId !== this.sessionId) {
+              console.debug(`[WebRTC] Dropping answer with mismatched sessionId (expected ${this.sessionId}, got ${msg.sessionId})`);
+              return;
+            }
+            if (this.pc.signalingState !== "have-local-offer") {
+              console.debug(`[WebRTC] Dropping answer because signalingState is ${this.pc.signalingState}`);
+              return;
             }
             await this.handleAnswer(msg.answer);
             break;
           case "ice-candidate":
-            if (!this.targetId && msg.clientId) {
-              this.targetId = msg.clientId;
+            if (!this.targetId && msg.clientId) this.targetId = msg.clientId;
+            if (msg.sessionId !== this.sessionId) {
+              console.debug(`[WebRTC] Dropping ice-candidate with mismatched sessionId`);
+              return;
             }
             await this.handleIceCandidate(msg.candidate);
             break;
@@ -79,19 +94,23 @@ export class WebRTCPeerConnection {
       } catch (err) {
         console.error("[WebRTC] Error handling signaling message", err);
       }
-    };
+    });
   }
 
   addTrack(track: MediaStreamTrack, stream: MediaStream) {
+    // Check if track is already added to prevent InvalidAccessError
+    if (this.pc.getSenders().some(s => s.track === track)) {
+      console.debug("[WebRTC] Track already added to peer connection, skipping");
+      return;
+    }
+
     const sender = this.pc.addTrack(track, stream);
     
-    // Force high bitrate for 4K streaming preservation
     if (track.kind === 'video') {
       const parameters = sender.getParameters();
       if (!parameters.encodings) {
         parameters.encodings = [{}];
       }
-      // Allow up to 50 Mbps for pristine 4K quality
       parameters.encodings[0].maxBitrate = 50 * 1000 * 1000;
       
       sender.setParameters(parameters).catch(e => {
@@ -105,27 +124,33 @@ export class WebRTCPeerConnection {
   }
 
   async createOffer() {
+    this.sessionId = crypto.randomUUID();
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
-    this.signaling.send({ type: "offer", offer: this.pc.localDescription, targetId: this.targetId } as any);
+    this.signaling.send({ 
+      type: "offer", 
+      offer: this.pc.localDescription, 
+      targetId: this.targetId,
+      sessionId: this.sessionId
+    } as any);
   }
 
   private async handleOffer(offer: RTCSessionDescriptionInit) {
     await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
-    
-    // Add any pending candidates
-    while (this.pendingCandidates.length > 0) {
-      const candidate = this.pendingCandidates.shift();
-      if (candidate) await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
-    }
-
+    await this.flushCandidates();
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
-    this.signaling.send({ type: "answer", answer: this.pc.localDescription, targetId: this.targetId } as any);
+    this.signaling.send({ 
+      type: "answer", 
+      answer: this.pc.localDescription, 
+      targetId: this.targetId,
+      sessionId: this.sessionId
+    } as any);
   }
 
   private async handleAnswer(answer: RTCSessionDescriptionInit) {
     await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+    await this.flushCandidates();
   }
 
   private async handleIceCandidate(candidate: RTCIceCandidateInit) {
@@ -136,7 +161,25 @@ export class WebRTCPeerConnection {
     }
   }
 
+  private async flushCandidates() {
+    while (this.pendingCandidates.length > 0) {
+      const candidate = this.pendingCandidates.shift();
+      if (candidate) {
+        try {
+          await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+          console.error("[WebRTC] Error adding queued ICE candidate", e);
+        }
+      }
+    }
+  }
+
   close() {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = undefined;
+    }
+    
     this.pc.getSenders().forEach((sender) => {
       if (sender.track) {
         sender.track.stop();

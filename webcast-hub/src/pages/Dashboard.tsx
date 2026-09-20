@@ -1,5 +1,5 @@
 import { Tv, MonitorSmartphone, Settings } from "lucide-react";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { SignalingClient, getGlobalSignaling } from "../webrtc/SignalingClient";
 import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
 
@@ -15,6 +15,51 @@ export default function Dashboard() {
   const signalingRef = useRef<SignalingClient | null>(null);
   const pcMapRef = useRef<Map<string, WebRTCPeerConnection>>(new Map());
   const activeStreamRef = useRef<MediaStream | null>(null);
+  const lastNegotiation = useRef<Map<string, number>>(new Map());
+  const unsubsRef = useRef<(() => void)[]>([]);
+
+  useEffect(() => {
+    return () => {
+      // Cleanup on unmount
+      unsubsRef.current.forEach(unsub => unsub());
+      pcMapRef.current.forEach(pc => pc.close());
+      pcMapRef.current.clear();
+      if (signalingRef.current) {
+        signalingRef.current.disconnect();
+      }
+      if (activeStreamRef.current) {
+        activeStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, []);
+
+  const startNegotiation = useCallback(async (receiverId: string) => {
+    const now = Date.now();
+    const last = lastNegotiation.current.get(receiverId) || 0;
+    if (now - last < 3000) {
+      console.log(`[Sender] Debouncing negotiation for ${receiverId}`);
+      return;
+    }
+    lastNegotiation.current.set(receiverId, now);
+
+    if (!activeStreamRef.current || !signalingRef.current) return;
+    
+    let pc = pcMapRef.current.get(receiverId);
+    if (!pc) {
+      pc = new WebRTCPeerConnection(signalingRef.current, receiverId);
+      pcMapRef.current.set(receiverId, pc);
+    }
+    
+    // Safety clear tracks if changing source
+    const senders = pc.pc.getSenders();
+    activeStreamRef.current.getTracks().forEach(track => {
+      if (!senders.find(s => s.track === track)) {
+        pc!.addTrack(track, activeStreamRef.current!);
+      }
+    });
+    
+    await pc.createOffer();
+  }, []);
 
   const generateRoom = async () => {
     try {
@@ -27,26 +72,34 @@ export default function Dashboard() {
       setRoomId(data.roomId);
       setOwnerToken(data.ownerToken);
       
+      // Disconnect old socket if it exists
+      if (signalingRef.current) {
+        unsubsRef.current.forEach(unsub => unsub());
+        unsubsRef.current = [];
+        signalingRef.current.disconnect();
+      }
+
       // Connect to signaling immediately so the receiver sees the sender is ready
       const signaling = getGlobalSignaling(data.roomId, "sender", data.ownerToken);
       signalingRef.current = signaling;
       
-      signaling.onMessage = (msg) => {
+      unsubsRef.current.push(signaling.on((msg) => {
         if (msg.type === "room-state") {
           setReceiverCount(msg.receiverCount);
         } else if (msg.type === "receiver-joined") {
           setReceiverCount(prev => prev + 1);
-          handleReceiverJoined(msg.receiverId!);
+          startNegotiation(msg.receiverId!);
         } else if (msg.type === "peer-left" && msg.role === "receiver") {
           setReceiverCount(prev => Math.max(0, prev - 1));
           if (msg.clientId && pcMapRef.current.has(msg.clientId)) {
             pcMapRef.current.get(msg.clientId)?.close();
             pcMapRef.current.delete(msg.clientId);
+            lastNegotiation.current.delete(msg.clientId);
           }
         } else if (msg.type === "request-offer") {
-          handleReceiverJoined(msg.receiverId!);
+          startNegotiation(msg.receiverId!);
         }
-      };
+      }));
 
       signaling.onConnect = () => {
         setStatus("Waiting for receiver...");
@@ -64,21 +117,7 @@ export default function Dashboard() {
   };
 
 
-  const handleReceiverJoined = async (receiverId: string) => {
-    if (!activeStreamRef.current || !signalingRef.current) return;
-    
-    let pc = pcMapRef.current.get(receiverId);
-    if (!pc) {
-      pc = new WebRTCPeerConnection(signalingRef.current, receiverId);
-      pcMapRef.current.set(receiverId, pc);
-    }
-    
-    activeStreamRef.current.getTracks().forEach(track => {
-      pc!.addTrack(track, activeStreamRef.current!);
-    });
-    
-    await pc.createOffer();
-  };
+
 
   const handleCastChromeTab = async () => {
     if (!roomId) {
@@ -90,25 +129,41 @@ export default function Dashboard() {
         video: { width: { ideal: 3840, max: 3840 }, height: { ideal: 2160, max: 2160 }, frameRate: { ideal: 60, max: 60 } },
         audio: true
       });
+      
+      // Stop old tracks if they exist
+      if (activeStreamRef.current) {
+        activeStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+      // Recreate PCs for fresh session
+      pcMapRef.current.forEach(pc => pc.close());
+      pcMapRef.current.clear();
+      lastNegotiation.current.clear();
+      
       activeStreamRef.current = stream;
       setStatus("Casting screen...");
-      
-      if (!signalingRef.current || signalingRef.current.roomId !== roomId) {
-        signalingRef.current = getGlobalSignaling(roomId, "sender", ownerToken);
-      }
-      
       setMediaInfo({ filename: "Screen Capture", resolution: "4K" }); 
+      setIsConnected(true);
       
+      if (signalingRef.current) {
+        unsubsRef.current.forEach(unsub => unsub());
+        unsubsRef.current = [];
+        signalingRef.current.disconnect();
+      }
+      signalingRef.current = getGlobalSignaling(roomId, "sender", ownerToken);
       signalingRef.current.connect();
       
-      // Handle the user clicking "Stop sharing" in the browser UI
+      // Negotiate with existing receivers
+      signalingRef.current.send({ type: "ping" } as any); // To get room-state or wake up receivers? Actually let them request-offer
+      
       stream.getVideoTracks()[0].onended = () => {
         stopCasting();
       };
       
     } catch (err) {
       console.error("Screen capture failed", err);
-      setStatus("Screen capture cancelled or failed.");
+      if (!activeStreamRef.current) {
+        setStatus("Screen capture cancelled or failed.");
+      }
     }
   };
 
@@ -167,13 +222,25 @@ export default function Dashboard() {
         });
       }
 
+      // Stop old tracks if they exist
+      if (activeStreamRef.current) {
+        activeStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+      // Recreate PCs for fresh session
+      pcMapRef.current.forEach(pc => pc.close());
+      pcMapRef.current.clear();
+      lastNegotiation.current.clear();
+
       activeStreamRef.current = stream;
       setStatus(`Casting Local Media`);
       setIsConnected(true);
 
-      if (!signalingRef.current || signalingRef.current.roomId !== roomId) {
-        signalingRef.current = getGlobalSignaling(roomId, "sender", ownerToken);
+      if (signalingRef.current) {
+        unsubsRef.current.forEach(unsub => unsub());
+        unsubsRef.current = [];
+        signalingRef.current.disconnect();
       }
+      signalingRef.current = getGlobalSignaling(roomId, "sender", ownerToken);
       signalingRef.current.connect();
       
     } else {
@@ -186,6 +253,7 @@ export default function Dashboard() {
     
     pcMapRef.current.forEach(pc => pc.close());
     pcMapRef.current.clear();
+    lastNegotiation.current.clear();
     
     if (activeStreamRef.current) {
       activeStreamRef.current.getTracks().forEach(track => track.stop());

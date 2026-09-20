@@ -1,6 +1,6 @@
 export type ClientType = "sender" | "receiver";
 
-export type SignalingMessage = { clientId?: string; targetId?: string } & (
+export type SignalingMessage = { clientId?: string; targetId?: string; sessionId?: string } & (
   | { type: "media-url"; url: string; filename?: string; resolution?: string }
   | { type: "media-play" }
   | { type: "media-pause" }
@@ -36,7 +36,14 @@ export class SignalingClient {
   
   public roomId: string;
   
-  public onMessage?: (data: SignalingMessage) => void;
+  private messageListeners = new Set<(data: SignalingMessage) => void>();
+  
+  public on(handler: (data: SignalingMessage) => void): () => void {
+    this.messageListeners.add(handler);
+    return () => {
+      this.messageListeners.delete(handler);
+    };
+  }
   public onConnect?: () => void;
   public onDisconnect?: () => void;
   public onError?: (error: any) => void;
@@ -135,7 +142,7 @@ export class SignalingClient {
         const data = JSON.parse(event.data);
         if (data.type === "pong" || data.type === "ping") return;
         console.log(`[Signaling] Received:`, data.type);
-        this.onMessage?.(data);
+        this.messageListeners.forEach(listener => listener(data));
       } catch (err) {
         console.error("[Signaling] Failed to parse message", err);
       }

@@ -89,14 +89,13 @@ export default function Receiver() {
     const signaling = getGlobalSignaling(roomId, "receiver");
     const peer = new WebRTCPeerConnection(signaling);
 
+    const mediaStream = new MediaStream();
+
     signaling.onConnect = () => {
       setStatus("Waiting for sender...");
     };
 
-    const originalOnMessage = signaling.onMessage;
-    signaling.onMessage = (msg) => {
-      originalOnMessage?.(msg);
-      
+    const unsub = signaling.on((msg) => {
       if (msg.type === "room-state") {
         if (msg.senderPresent) {
           setSenderConnected(true);
@@ -109,6 +108,8 @@ export default function Receiver() {
       } else if (msg.type === "sender-joined") {
         setSenderConnected(true);
         setStatus("Sender joined. Requesting stream...");
+        // Clear previous tracks
+        mediaStream.getTracks().forEach(t => mediaStream.removeTrack(t));
         signaling.send({ type: "request-offer", receiverId: signaling.clientId } as any);
       } else if (msg.type === "peer-left" && msg.role === "sender") {
         setSenderConnected(false);
@@ -129,22 +130,27 @@ export default function Receiver() {
       } else if (msg.type === "media-seek") {
         if (videoRef.current) videoRef.current.currentTime = msg.time;
       }
-    };
+    });
 
-    peer.onTrack = (track, streams) => {
+    peer.onTrack = (track) => {
       console.log("Received track", track.kind);
-      if (streams && streams[0] && videoRef.current) {
-        if (videoRef.current.srcObject !== streams[0]) {
-          videoRef.current.srcObject = streams[0];
+      
+      if (!mediaStream.getTracks().includes(track)) {
+        mediaStream.addTrack(track);
+      }
+
+      if (videoRef.current) {
+        if (videoRef.current.srcObject !== mediaStream) {
+          videoRef.current.srcObject = mediaStream;
           setHasMedia(true);
           setMediaInfo(prev => ({ ...prev, resolution: prev?.resolution || "Live Stream" }));
           setStatus("");
-          
-          videoRef.current.play().catch(err => {
-            console.error("Autoplay prevented:", err);
-            setNeedsUserInteraction(true);
-          });
         }
+        
+        videoRef.current.play().catch(err => {
+          console.error("Autoplay prevented:", err);
+          setNeedsUserInteraction(true);
+        });
       }
     };
 
@@ -152,7 +158,6 @@ export default function Receiver() {
       console.log("WebRTC state:", state);
       setWebrtcState(state);
       if (state === "disconnected" || state === "failed") {
-        // Do not immediately hide media, just show reconnecting
         setStatus("Stream disconnected / Reconnecting...");
       } else if (state === "connected") {
         setStatus("");
@@ -162,7 +167,7 @@ export default function Receiver() {
     signaling.connect();
 
     return () => {
-      // Don't disconnect global signaling, just close peer
+      unsub();
       peer.close();
     };
   }, [roomId]);
