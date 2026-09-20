@@ -1,17 +1,9 @@
 export class CastRoomDurableObject {
     ctx;
     env;
-    sessions;
-    mediaState;
     constructor(ctx, env) {
         this.ctx = ctx;
         this.env = env;
-        this.sessions = new Map();
-        this.mediaState = {
-            url: null,
-            playing: false,
-            currentTime: 0,
-        };
     }
     async fetch(request) {
         const url = new URL(request.url);
@@ -32,11 +24,20 @@ export class CastRoomDurableObject {
         }
         // Debug Route
         if (url.pathname.endsWith("/debug")) {
+            const websockets = this.ctx.getWebSockets();
+            let senders = 0;
+            let receivers = 0;
+            websockets.forEach(ws => {
+                const data = ws.deserializeAttachment();
+                if (data.type === "sender")
+                    senders++;
+                if (data.type === "receiver")
+                    receivers++;
+            });
             return new Response(JSON.stringify({
-                connections: this.sessions.size,
-                senders: Array.from(this.sessions.values()).filter(s => s.type === "sender").length,
-                receivers: Array.from(this.sessions.values()).filter(s => s.type === "receiver").length,
-                mediaState: this.mediaState
+                connections: websockets.length,
+                senders,
+                receivers
             }), {
                 headers: { "Content-Type": "application/json" }
             });
@@ -56,32 +57,24 @@ export class CastRoomDurableObject {
             }
         }
         const { 0: client, 1: server } = new WebSocketPair();
+        const clientId = url.searchParams.get("clientId") || crypto.randomUUID();
         this.ctx.acceptWebSocket(server);
-        this.sessions.set(server, { type: clientType });
-        // Notify others that someone joined
+        server.serializeAttachment({ type: clientType, clientId });
+        const websockets = this.ctx.getWebSockets();
+        const senderPresent = websockets.some(ws => ws.deserializeAttachment().type === "sender");
+        const receiverCount = websockets.filter(ws => ws.deserializeAttachment().type === "receiver").length;
+        // Send room-state to the newly connected client
+        server.send(JSON.stringify({
+            type: "room-state",
+            senderPresent,
+            receiverCount,
+            yourClientId: clientId,
+        }));
+        // Notify others
         this.broadcast(JSON.stringify({
-            type: clientType === "sender" ? "sender-joined" : "receiver-joined"
+            type: clientType === "sender" ? "sender-joined" : "receiver-joined",
+            receiverId: clientType === "receiver" ? clientId : undefined
         }), server);
-        // If a receiver joins, notify them if a sender is already present
-        if (clientType === "receiver") {
-            const hasSender = Array.from(this.sessions.values()).some(s => s.type === "sender");
-            if (hasSender) {
-                server.send(JSON.stringify({ type: "sender-joined" }));
-            }
-        }
-        // If a receiver joins, send them the current media state if available
-        if (clientType === "receiver" && this.mediaState.url) {
-            server.send(JSON.stringify({
-                type: "media-url",
-                url: this.mediaState.url,
-                filename: this.mediaState.filename,
-                resolution: this.mediaState.resolution
-            }));
-            if (this.mediaState.playing) {
-                server.send(JSON.stringify({ type: "media-play" }));
-            }
-            server.send(JSON.stringify({ type: "media-seek", time: this.mediaState.currentTime }));
-        }
         return new Response(null, {
             status: 101,
             webSocket: client,
@@ -96,45 +89,38 @@ export class CastRoomDurableObject {
                 ws.send(JSON.stringify({ type: "pong" }));
                 return;
             }
-            const session = this.sessions.get(ws);
+            const session = ws.deserializeAttachment();
             if (!session)
                 return;
-            // Handle media state synchronization
-            if (msg.type === "media-url") {
-                this.mediaState.url = msg.url;
-                this.mediaState.filename = msg.filename;
-                this.mediaState.resolution = msg.resolution;
-                this.mediaState.playing = true;
-                this.mediaState.currentTime = 0;
-            }
-            else if (msg.type === "media-play") {
-                this.mediaState.playing = true;
-            }
-            else if (msg.type === "media-pause") {
-                this.mediaState.playing = false;
-            }
-            else if (msg.type === "media-seek") {
-                this.mediaState.currentTime = msg.time;
+            // Inject sender's clientId for targeted responses
+            msg.clientId = session.clientId;
+            // Targeted routing based on targetId (if specified)
+            if (msg.targetId) {
+                const websockets = this.ctx.getWebSockets();
+                for (const targetWs of websockets) {
+                    const targetSession = targetWs.deserializeAttachment();
+                    if (targetSession && targetSession.clientId === msg.targetId) {
+                        targetWs.send(JSON.stringify(msg));
+                        return; // message delivered
+                    }
+                }
             }
             // Explicit routing based on sender/receiver roles
             if (msg.type === "offer") {
-                // Offer is sent by sender, route only to receivers
                 if (session.type === "sender")
-                    this.broadcastToRole("receiver", message);
+                    this.broadcastToRole("receiver", JSON.stringify(msg));
             }
             else if (msg.type === "answer") {
-                // Answer is sent by receiver, route only to sender
                 if (session.type === "receiver")
-                    this.broadcastToRole("sender", message);
+                    this.broadcastToRole("sender", JSON.stringify(msg));
             }
             else if (msg.type === "ice-candidate") {
-                // Route ICE candidates to opposite role
                 const targetRole = session.type === "sender" ? "receiver" : "sender";
-                this.broadcastToRole(targetRole, message);
+                this.broadcastToRole(targetRole, JSON.stringify(msg));
             }
             else {
-                // General messages (like media controls) are broadcasted to everyone else
-                this.broadcast(message, ws);
+                // General messages
+                this.broadcast(JSON.stringify(msg), ws);
             }
         }
         catch (e) {
@@ -148,23 +134,18 @@ export class CastRoomDurableObject {
         this.handleDisconnect(ws);
     }
     handleDisconnect(ws) {
-        const session = this.sessions.get(ws);
-        this.sessions.delete(ws);
+        const session = ws.deserializeAttachment();
         if (session) {
             this.broadcast(JSON.stringify({
-                type: session.type === "sender" ? "sender-disconnected" : "receiver-disconnected"
+                type: "peer-left",
+                role: session.type,
+                clientId: session.clientId
             }));
-            // If sender disconnects, clear media state ONLY if there are no other senders
-            if (session.type === "sender") {
-                const hasSender = Array.from(this.sessions.values()).some(s => s.type === "sender");
-                if (!hasSender) {
-                    this.mediaState = { url: null, filename: undefined, resolution: undefined, playing: false, currentTime: 0 };
-                }
-            }
         }
     }
     broadcast(message, skipWs) {
-        for (const [ws] of this.sessions) {
+        const websockets = this.ctx.getWebSockets();
+        for (const ws of websockets) {
             if (ws !== skipWs) {
                 try {
                     ws.send(message);
@@ -176,8 +157,10 @@ export class CastRoomDurableObject {
         }
     }
     broadcastToRole(role, message) {
-        for (const [ws, session] of this.sessions) {
-            if (session.type === role) {
+        const websockets = this.ctx.getWebSockets();
+        for (const ws of websockets) {
+            const session = ws.deserializeAttachment();
+            if (session && session.type === role) {
                 try {
                     ws.send(message);
                 }

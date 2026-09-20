@@ -1,6 +1,6 @@
 export type ClientType = "sender" | "receiver";
 
-export type SignalingMessage = 
+export type SignalingMessage = { clientId?: string; targetId?: string } & (
   | { type: "media-url"; url: string; filename?: string; resolution?: string }
   | { type: "media-play" }
   | { type: "media-pause" }
@@ -11,12 +11,13 @@ export type SignalingMessage =
   | { type: "peer-left"; role: string; clientId?: string }
   | { type: "room-state"; senderPresent: boolean; receiverCount: number; yourClientId: string }
   | { type: "request-offer"; receiverId?: string; senderId?: string }
-  | { type: "offer"; offer: any; targetId?: string; senderId?: string }
-  | { type: "answer"; answer: any; targetId?: string; receiverId?: string }
-  | { type: "ice-candidate"; candidate: any; targetId?: string; senderId?: string; receiverId?: string }
+  | { type: "offer"; offer: any; senderId?: string }
+  | { type: "answer"; answer: any; receiverId?: string }
+  | { type: "ice-candidate"; candidate: any; senderId?: string; receiverId?: string }
   | { type: "error"; reason: string }
   | { type: "ping" }
-  | { type: "pong" };
+  | { type: "pong" }
+);
 
 const instances = new Map<string, SignalingClient>();
 
@@ -82,7 +83,7 @@ export class SignalingClient {
   private setupLifecycle() {
     if (typeof window === 'undefined') return;
 
-    window.addEventListener('pagehide', (e) => {
+    window.addEventListener('pagehide', () => {
       this.isSuspended = true;
       if (this.ws) {
         // Code 1000 for normal closure

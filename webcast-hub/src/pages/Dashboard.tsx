@@ -1,5 +1,5 @@
-import { MonitorUp, Tv, MonitorSmartphone, Settings } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { Tv, MonitorSmartphone, Settings } from "lucide-react";
+import { useState, useRef } from "react";
 import { SignalingClient, getGlobalSignaling } from "../webrtc/SignalingClient";
 import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
 
@@ -8,7 +8,6 @@ export default function Dashboard() {
   const [ownerToken, setOwnerToken] = useState<string>("");
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [status, setStatus] = useState<string>("Not Connected");
-  const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [mediaInfo, setMediaInfo] = useState<{filename: string, resolution: string} | null>(null);
   const [receiverCount, setReceiverCount] = useState<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -243,8 +242,8 @@ export default function Dashboard() {
 
       <main className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
         <div onClick={handleCastChromeTab} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-blue-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">
-          <div className="w-14 h-14 bg-linear-to-br from-blue-500/20 to-purple-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(59,130,246,0.3)] transition-all">
-            <MonitorUp className="w-7 h-7 text-blue-400 group-hover:text-blue-300" />
+          <div className="w-14 h-14 bg-linear-to-br from-blue-500/20 to-indigo-500/20 border border-white/5 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:shadow-[0_0_20px_rgba(59,130,246,0.3)] transition-all relative">
+            <Tv className="w-7 h-7 text-blue-400 group-hover:text-blue-300 relative z-10" />
           </div>
           <h2 className="text-2xl font-semibold mb-3 tracking-wide">Cast Screen / Tab</h2>
           <p className="text-muted-foreground/80 leading-relaxed font-light">Instantly cast your browser tab or entire screen directly from the web.</p>
@@ -270,21 +269,6 @@ export default function Dashboard() {
       <section className="mt-16 pt-8 relative">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-px bg-linear-to-r from-transparent via-white/20 to-transparent"></div>
         <h3 className="text-xl font-semibold mb-6 tracking-wide">Active Session</h3>
-        
-        {uploadProgress > 0 && uploadProgress < 100 && (
-          <div className="mb-6 glass-card p-6 rounded-2xl">
-            <div className="flex justify-between text-sm mb-3 font-medium">
-              <span className="text-blue-400">Uploading Media...</span>
-              <span className="text-muted-foreground">{Math.round(uploadProgress)}%</span>
-            </div>
-            <div className="w-full bg-black/40 rounded-full h-3 border border-white/5 overflow-hidden">
-              <div 
-                className="bg-linear-to-r from-blue-500 to-indigo-500 h-full rounded-full transition-all duration-300 shadow-[0_0_10px_rgba(59,130,246,0.5)]" 
-                style={{ width: `${uploadProgress}%` }}
-              ></div>
-            </div>
-          </div>
-        )}
 
         <div className="glass-card p-6 md:p-8 rounded-2xl flex flex-col gap-6 relative overflow-hidden">
           {isConnected && <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-500/20 rounded-full blur-[50px] pointer-events-none"></div>}
