@@ -153,6 +153,7 @@ export default function Receiver() {
         stopOfferLoop();
       } else if (msg.type === "offer") {
         stopOfferLoop();
+        setStatus("Negotiating connection...");
       } else if (msg.type === "media-url") {
         if (videoRef.current) {
           videoRef.current.srcObject = null;
@@ -203,6 +204,8 @@ export default function Receiver() {
       if (state === "disconnected" || state === "failed") {
         setStatus("Stream disconnected / Reconnecting...");
         if (isSenderPresent) startOfferLoop();
+      } else if (state === "connecting") {
+        setStatus("Connecting...");
       } else if (state === "connected") {
         setStatus("");
         stopOfferLoop();

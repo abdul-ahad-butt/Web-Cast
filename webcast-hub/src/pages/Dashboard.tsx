@@ -387,7 +387,7 @@ export default function Dashboard() {
 
       <input type="file" ref={fileInputRef} className="hidden" accept="video/*,image/*" onChange={handleFileChange} />
       {/* Must be played inline to capture stream properly. Cannot be display:none, so we visually hide it instead. */}
-      <video ref={videoRef} className="fixed -top-[9999px] -left-[9999px] opacity-0 pointer-events-none" controls muted playsInline loop />
+      <video ref={videoRef} className="fixed top-[-9999px] left-[-9999px] opacity-0 pointer-events-none" controls muted playsInline loop />
 
       <main className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
         <div onClick={handleCastChromeTab} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-blue-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">

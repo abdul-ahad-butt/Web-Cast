@@ -153,7 +153,7 @@ export class WebRTCPeerConnection {
       
       this.signaling.send({ 
         type: "offer", 
-        offer: this.pc.localDescription, 
+        offer: offer, 
         targetId: this.targetId,
         sessionId: this.sessionId
       } as any);
@@ -184,7 +184,7 @@ export class WebRTCPeerConnection {
     await this.pc.setLocalDescription(answer);
     this.signaling.send({ 
       type: "answer", 
-      answer: this.pc.localDescription, 
+      answer: answer, 
       targetId: this.targetId,
       sessionId: this.sessionId
     } as any);

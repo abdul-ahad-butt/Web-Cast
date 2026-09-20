@@ -121,9 +121,13 @@ export class CastRoomDurableObject {
                 for (const targetWs of websockets) {
                     const targetSession = targetWs.deserializeAttachment();
                     if (targetSession && targetSession.clientId === msg.targetId) {
-                        targetWs.send(JSON.stringify(msg));
-                        delivered = true;
-                        break;
+                        try {
+                            targetWs.send(JSON.stringify(msg));
+                            delivered = true;
+                        }
+                        catch (err) {
+                            console.warn(`[Worker] Failed to send to ${msg.targetId}`, err);
+                        }
                     }
                 }
                 if (!delivered) {

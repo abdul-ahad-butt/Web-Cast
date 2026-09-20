@@ -112,10 +112,7 @@ test.describe('WebCast Hub E2E', () => {
 
     await senderPage.getByText('Generate New').click();
     
-    const fileChooserPromise = senderPage.waitForEvent('filechooser');
-    await senderPage.getByText('Cast Local Media').click();
-    const fileChooser = await fileChooserPromise;
-    await fileChooser.setFiles('e2e/test.webm');
+    await senderPage.getByText('Cast Screen / Tab').click();
 
     await senderPage.waitForFunction(() => {
       console.log("Checking for input, found:", document.querySelector('input[placeholder="Enter Room Code"]'));
@@ -157,10 +154,7 @@ test.describe('WebCast Hub E2E', () => {
     }, { timeout: 5000 }).catch(() => {}); // tolerate timeout
 
     // Now sender starts casting
-    const fileChooserPromise = senderPage.waitForEvent('filechooser');
-    await senderPage.getByText('Cast Local Media').click();
-    const fileChooser = await fileChooserPromise;
-    await fileChooser.setFiles('e2e/test.webm');
+    await senderPage.getByText('Cast Screen / Tab').click();
 
     await checkReceiverConnected(receiverPage);
   });
