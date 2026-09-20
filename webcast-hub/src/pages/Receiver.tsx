@@ -201,7 +201,7 @@ export default function Receiver() {
             )}
 
             {/* Custom Controls Overlay */}
-            <div className={`absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black/80 via-black/40 to-transparent transition-opacity duration-300 z-40 ${showControls ? 'opacity-100' : 'opacity-0'}`}>
+            <div className={`absolute bottom-0 left-0 right-0 p-6 bg-linear-to-t from-black/80 via-black/40 to-transparent transition-opacity duration-300 z-40 ${showControls ? 'opacity-100' : 'opacity-0'}`}>
               {mediaInfo?.filename && (
                 <div className="mb-4 text-white/90 font-medium tracking-wide drop-shadow-md">
                   {mediaInfo.filename}
@@ -249,7 +249,7 @@ export default function Receiver() {
                         <Settings className="w-5 h-5" />
                       </button>
                       {showSettings && (
-                        <div className="absolute bottom-full right-0 mb-4 bg-black/90 border border-white/10 rounded-lg p-2 min-w-[150px] shadow-2xl backdrop-blur-md">
+                        <div className="absolute bottom-full right-0 mb-4 bg-black/90 border border-white/10 rounded-lg p-2 min-w-37.5 shadow-2xl backdrop-blur-md">
                           <p className="text-xs text-muted-foreground uppercase tracking-widest font-semibold px-3 py-2 border-b border-white/10 mb-1">Quality</p>
                           <button className="w-full text-left px-3 py-2 hover:bg-white/10 rounded-md text-sm flex items-center justify-between text-blue-400 font-medium">
                             {mediaInfo?.resolution || "Auto"}
