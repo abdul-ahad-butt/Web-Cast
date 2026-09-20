@@ -162,13 +162,16 @@ export default {
         headers.set("Accept-Ranges", "bytes");
         
         // R2 uses `object.range` if a partial request was made and fulfilled
-        if (object.range) {
-          headers.set("Content-Range", `bytes ${object.range.offset}-${object.range.offset + object.range.length - 1}/${object.size}`);
-          headers.set("Content-Length", `${object.range.length}`);
-          return new Response(object.body, { status: 206, headers });
+        const obj = object as R2ObjectBody;
+        if (obj.range && 'offset' in obj.range && obj.range.offset !== undefined) {
+          const offset = obj.range.offset;
+          const length = obj.range.length || obj.size - offset; // fallback if length isn't provided
+          headers.set("Content-Range", `bytes ${offset}-${offset + length - 1}/${obj.size}`);
+          headers.set("Content-Length", `${length}`);
+          return new Response(obj.body, { status: 206, headers });
         } else {
-          headers.set("Content-Length", `${object.size}`);
-          return new Response(object.body, { status: 200, headers });
+          headers.set("Content-Length", `${obj.size}`);
+          return new Response(obj.body, { status: 200, headers });
         }
       }
 
