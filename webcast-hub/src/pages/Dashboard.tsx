@@ -59,6 +59,9 @@ export default function Dashboard() {
         pc.close();
         pcMapRef.current.delete(receiverId);
         pc = undefined;
+      } else if (state === "connected" && !sessionChanged) {
+        console.log(`[Sender] Connection is healthy for ${receiverId}, ignoring negotiation`);
+        return;
       } else if ((state === "new" || state === "connecting") && (now - last < 4000)) {
         console.log(`[Sender] Debouncing negotiation for ${receiverId}`);
         return;
@@ -142,21 +145,35 @@ export default function Dashboard() {
     unsubsRef.current.push(signaling.on((msg) => {
       if (msg.type === "room-state") {
         setReceiverCount(msg.receiverCount);
+        if ((msg as any).receivers && Array.isArray((msg as any).receivers)) {
+          const currentReceivers = new Set<string>((msg as any).receivers);
+          currentReceivers.forEach(id => {
+            if (!knownReceiversRef.current.has(id)) {
+              knownReceiversRef.current.add(id);
+              if (activeStreamRef.current) startNegotiation(id);
+            }
+          });
+        }
       } else if (msg.type === "receiver-joined") {
         setReceiverCount(prev => prev + 1);
         knownReceiversRef.current.add(msg.receiverId!);
         startNegotiation(msg.receiverId!);
       } else if (msg.type === "peer-left" && msg.role === "receiver") {
         setReceiverCount(prev => Math.max(0, prev - 1));
-        if (msg.clientId) knownReceiversRef.current.delete(msg.clientId);
-        if (msg.clientId && pcMapRef.current.has(msg.clientId)) {
-          pcMapRef.current.get(msg.clientId)?.close();
-          pcMapRef.current.delete(msg.clientId);
-          lastNegotiation.current.delete(msg.clientId);
+        const clientId = msg.clientId;
+        if (clientId) {
+          knownReceiversRef.current.delete(clientId);
+          setTimeout(() => {
+            if (!knownReceiversRef.current.has(clientId) && pcMapRef.current.has(clientId)) {
+              pcMapRef.current.get(clientId)?.close();
+              pcMapRef.current.delete(clientId);
+              lastNegotiation.current.delete(clientId);
+              let count = 0;
+              pcMapRef.current.forEach(p => { if (p.pc.connectionState === 'connected') count++; });
+              setConnectedCount(count);
+            }
+          }, 15000); // 15s grace period
         }
-        let count = 0;
-        pcMapRef.current.forEach(p => { if (p.pc.connectionState === 'connected') count++; });
-        setConnectedCount(count);
       } else if (msg.type === "request-offer") {
         knownReceiversRef.current.add(msg.receiverId!);
         startNegotiation(msg.receiverId!, msg.sessionId);
@@ -166,12 +183,23 @@ export default function Dashboard() {
       }
     }));
 
+    (window as any).__wcStats = () => {
+      let stats: any = {};
+      pcMapRef.current.forEach((pc, id) => {
+        stats[id] = {
+          state: pc.pc.connectionState,
+          ice: pc.pc.iceConnectionState,
+          signaling: pc.pc.signalingState
+        };
+      });
+      return stats;
+    };
+
     signaling.onConnect = () => {
       setStatus("Waiting for receiver...");
       setIsConnected(true);
-      if (activeStreamRef.current) {
-        pcMapRef.current.forEach((_, recId) => startNegotiation(recId));
-      }
+      // Sender doesn't need to blindly startNegotiation on connect anymore,
+      // it will wait for receiver-joined or room-state.
     };
     signaling.onDisconnect = () => {
       setIsConnected(false);
@@ -223,6 +251,15 @@ export default function Dashboard() {
           p.controlChannel.send(msgStr);
         }
       });
+
+      // Background tab fps workaround for chromium
+      if (document.hidden && activeStreamRef.current && !isLocal) {
+        const track = activeStreamRef.current.getVideoTracks()[0];
+        if (track && track.enabled) {
+          track.enabled = false;
+          track.enabled = true;
+        }
+      }
     }, 500);
     return () => clearInterval(interval);
   }, [isConnected]);

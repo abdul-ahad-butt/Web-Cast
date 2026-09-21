@@ -246,8 +246,9 @@ export default function Receiver() {
       } else if (msg.type === "peer-left" && msg.role === "sender") {
         isSenderPresent = false;
         setSenderConnected(false);
-        setHasMedia(false);
-        setStatus("Sender disconnected. Waiting...");
+        // Do not drop media immediately - let WebRTC connection state dictate media presence
+        // setHasMedia(false); 
+        // setStatus("Sender disconnected. Waiting...");
         stopOfferLoop();
       } else if (msg.type === "offer") {
         stopOfferLoop();
@@ -338,6 +339,14 @@ export default function Receiver() {
         setStatus("");
         stopOfferLoop();
       }
+    };
+
+    (window as any).__wcStats = () => {
+      return {
+        state: peer.pc.connectionState,
+        ice: peer.pc.iceConnectionState,
+        signaling: peer.pc.signalingState
+      };
     };
 
     (window as any)._manualRetryOffer = () => {
@@ -489,8 +498,12 @@ export default function Receiver() {
                         <Settings className="w-5 h-5" />
                       </button>
                       {showSettings && (
-                        <div className="absolute bottom-full right-0 mb-4 bg-black/90 border border-white/10 rounded-lg p-2 min-w-37.5 shadow-2xl backdrop-blur-md">
-                          <p className="text-xs text-muted-foreground uppercase tracking-widest font-semibold px-3 py-2 border-b border-white/10 mb-1">Quality</p>
+                        <div className="absolute bottom-full right-0 mb-4 bg-black/90 border border-white/10 rounded-lg p-2 min-w-48 shadow-2xl backdrop-blur-md">
+                          <p className="text-xs text-muted-foreground uppercase tracking-widest font-semibold px-3 py-2 border-b border-white/10 mb-1">Stats</p>
+                          <div className="px-3 py-2 text-xs font-mono text-white/80 whitespace-pre">
+                            {JSON.stringify((window as any).__wcStats?.(), null, 2)}
+                          </div>
+                          <p className="text-xs text-muted-foreground uppercase tracking-widest font-semibold px-3 py-2 border-b border-white/10 mb-1 mt-2">Quality</p>
                           <button className="w-full text-left px-3 py-2 hover:bg-white/10 rounded-md text-sm flex items-center justify-between text-blue-400 font-medium">
                             <div className="flex items-center gap-2">
                               {mediaInfo?.resolution || "Auto"}

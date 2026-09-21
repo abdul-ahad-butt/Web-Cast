@@ -76,15 +76,30 @@ export class CastRoomDurableObject {
         this.ctx.acceptWebSocket(server);
         server.serializeAttachment({ type: clientType, clientId });
         const websockets = this.ctx.getWebSockets();
-        const senderPresent = websockets.some(ws => ws.deserializeAttachment().type === "sender");
-        const receiverCount = websockets.filter(ws => ws.deserializeAttachment().type === "receiver").length;
+        const senderPresent = websockets.some(ws => ws.deserializeAttachment()?.type === "sender");
+        const receivers = websockets
+            .map(ws => ws.deserializeAttachment())
+            .filter(data => data && data.type === "receiver")
+            .map(data => data.clientId);
+        const receiverCount = receivers.length;
         // Send room-state to the newly connected client
-        server.send(JSON.stringify({
-            type: "room-state",
-            senderPresent,
-            receiverCount,
-            yourClientId: clientId,
-        }));
+        try {
+            server.send(JSON.stringify({
+                type: "room-state",
+                senderPresent,
+                receiverCount,
+                receivers,
+                yourClientId: clientId,
+            }));
+        }
+        catch (e) {
+            console.warn(`[Worker] Error sending room-state to ${clientId}`);
+            try {
+                server.close(1011, "Internal Error");
+            }
+            catch (cerr) { }
+            return new Response(null, { status: 101, webSocket: client });
+        }
         if (!isReplacement) {
             // Notify others role-scoped
             if (clientType === "sender") {
@@ -126,13 +141,28 @@ export class CastRoomDurableObject {
                             delivered = true;
                         }
                         catch (err) {
-                            console.warn(`[Worker] Failed to send to ${msg.targetId}`, err);
+                            console.warn(`[Worker] Failed to send to ${msg.targetId}, dropping socket`, err);
+                            try {
+                                targetWs.close(1011, "Send failed");
+                            }
+                            catch (e) { }
+                            this.handleDisconnect(targetWs);
                         }
                     }
                 }
                 if (!delivered) {
                     console.log(`[Worker] Delivery failed to ${msg.targetId}`);
-                    ws.send(JSON.stringify({ type: "error", reason: "peer-not-connected", to: msg.targetId }));
+                    try {
+                        ws.send(JSON.stringify({ type: "error", reason: "peer-not-connected", to: msg.targetId }));
+                    }
+                    catch (err) {
+                        console.warn(`[Worker] Failed to send error back to ${session.clientId}`, err);
+                        try {
+                            ws.close(1011, "Send failed");
+                        }
+                        catch (e) { }
+                        this.handleDisconnect(ws);
+                    }
                 }
                 return; // we handled this targeted message
             }
@@ -196,7 +226,11 @@ export class CastRoomDurableObject {
                     ws.send(message);
                 }
                 catch (err) {
-                    // Ignore
+                    try {
+                        ws.close(1011, "Send failed");
+                    }
+                    catch (e) { }
+                    this.handleDisconnect(ws);
                 }
             }
         }
@@ -210,7 +244,11 @@ export class CastRoomDurableObject {
                     ws.send(message);
                 }
                 catch (err) {
-                    // Ignore
+                    try {
+                        ws.close(1011, "Send failed");
+                    }
+                    catch (e) { }
+                    this.handleDisconnect(ws);
                 }
             }
         }

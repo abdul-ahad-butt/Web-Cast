@@ -13,6 +13,8 @@ export class WebRTCPeerConnection {
   public onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
   
   private pendingCandidates: RTCIceCandidateInit[] = [];
+  private lastNegotiationTime = 0;
+  private consecutiveFailures = 0;
 
   constructor(signaling: SignalingClient, targetId?: string, sessionId?: string) {
     this.signaling = signaling;
@@ -163,9 +165,25 @@ export class WebRTCPeerConnection {
   }
 
   async createOffer() {
+    if (this.pc.signalingState === "closed") {
+      console.warn(`[WebRTC] createOffer aborted, PC is closed for ${this.targetId}`);
+      return;
+    }
+    
+    const now = Date.now();
+    if (this.consecutiveFailures >= 3 && now - this.lastNegotiationTime < 10000) {
+      console.warn(`[WebRTC] Circuit breaker active for ${this.targetId}, ignoring negotiation`);
+      return;
+    }
+    if (now - this.lastNegotiationTime < 1000) {
+      console.warn(`[WebRTC] Rate limiting negotiation for ${this.targetId}`);
+      return;
+    }
+    this.lastNegotiationTime = now;
+
     try {
       this.sessionId = crypto.randomUUID();
-      console.log(`[WebRTC] negotiation start receiver=${this.targetId?.slice(0, 8) || 'unknown'} session=${this.sessionId?.slice(0, 8)}`);
+      console.log(`[WebRTC] negotiation start receiver=${this.targetId?.slice(0, 8) || 'unknown'} session=${this.sessionId?.slice(0, 8)} state=${this.pc.signalingState}`);
       let offer = await this.pc.createOffer();
       offer.sdp = this.tuneOpus(offer.sdp || "");
       console.log(`[WebRTC] offer created`);
@@ -178,12 +196,15 @@ export class WebRTCPeerConnection {
         sessionId: this.sessionId
       } as any);
       console.log(`[WebRTC] offer ${sent ? 'sent' : 'queued'}`);
-    } catch (e) {
-      console.error(`[WebRTC] negotiation failed reason=`, e);
+      this.consecutiveFailures = 0;
+    } catch (e: any) {
+      this.consecutiveFailures++;
+      console.error(`[WebRTC] negotiation failed reason=${e.message} state=${this.pc.signalingState}`, e);
     }
   }
 
   async resendOffer() {
+    if (this.pc.signalingState === "closed") return;
     if (this.pc.localDescription && this.sessionId) {
       this.signaling.send({ 
         type: "offer", 
