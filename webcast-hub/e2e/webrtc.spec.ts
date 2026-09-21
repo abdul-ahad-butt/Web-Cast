@@ -111,9 +111,6 @@ test.describe('WebCast Hub E2E', () => {
     await senderPage.goto('/');
 
     await senderPage.getByText('Generate New').click();
-    
-    await senderPage.getByText('Cast Screen / Tab').click();
-
     await senderPage.waitForFunction(() => {
       console.log("Checking for input, found:", document.querySelector('input[placeholder="Enter Room Code"]'));
       const el = document.querySelector('input[placeholder="Enter Room Code"]') as HTMLInputElement;
@@ -121,6 +118,9 @@ test.describe('WebCast Hub E2E', () => {
       return el && el.value.length > 0;
     }, { timeout: 5000 });
     const roomCode = await senderPage.locator('input[placeholder="Enter Room Code"]').inputValue();
+
+    await senderPage.getByText('Cast Screen / Tab').click();
+
 
     const receiverPage = await context.newPage();
     await setupLogging(receiverPage, 'Receiver');
