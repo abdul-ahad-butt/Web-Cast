@@ -3,7 +3,9 @@
     "target": "es2022",
     "module": "commonjs",
     "lib": ["es2022", "dom"],
-    "types": ["node", "@playwright/test"]
+    "types": ["node", "@playwright/test"],
+    "strict": true,
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["**/*.ts"]
 }
