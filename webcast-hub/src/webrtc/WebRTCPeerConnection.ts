@@ -125,13 +125,16 @@ export class WebRTCPeerConnection {
         parameters.encodings = [{}];
       }
       
-      const maxBitrate = isScreen ? 4_000_000 : 3_000_000;
-      parameters.encodings[0].maxBitrate = maxBitrate;
-      
       const settings = track.getSettings();
       const capturedHeight = settings.height || 1080;
-      parameters.encodings[0].scaleResolutionDownBy = Math.max(1, capturedHeight / 1080);
-      parameters.encodings[0].maxFramerate = 30;
+      
+      const is4K = capturedHeight >= 2160;
+      const maxBitrate = isScreen ? 5_000_000 : (is4K ? 15_000_000 : 5_000_000);
+      parameters.encodings[0].maxBitrate = maxBitrate;
+      
+      // Only scale down if it exceeds 4K
+      parameters.encodings[0].scaleResolutionDownBy = Math.max(1, capturedHeight / 2160);
+      parameters.encodings[0].maxFramerate = is4K ? 30 : 60;
       
       sender.setParameters(parameters).catch(e => {
         console.warn("[WebRTC] Failed to set max bitrate/framerate", e);
@@ -139,25 +142,42 @@ export class WebRTCPeerConnection {
     }
   }
 
+  controlChannel?: RTCDataChannel;
+
   createDataChannel(label: string, options?: RTCDataChannelInit) {
-    return this.pc.createDataChannel(label, options);
+    const dc = this.pc.createDataChannel(label, options);
+    if (label === 'control') {
+      this.controlChannel = dc;
+    }
+    return dc;
+  }
+
+  tuneOpus(sdp: string) {
+    if (!sdp.includes("stereo=1")) {
+      sdp = sdp.replace(
+        /(a=fmtp:\d+ .*useinbandfec=1)/g,
+        "$1;stereo=1;sprop-stereo=1;maxaveragebitrate=510000"
+      );
+    }
+    return sdp;
   }
 
   async createOffer() {
     try {
       this.sessionId = crypto.randomUUID();
       console.log(`[WebRTC] negotiation start receiver=${this.targetId?.slice(0, 8) || 'unknown'} session=${this.sessionId?.slice(0, 8)}`);
-      const offer = await this.pc.createOffer();
+      let offer = await this.pc.createOffer();
+      offer.sdp = this.tuneOpus(offer.sdp || "");
       console.log(`[WebRTC] offer created`);
       await this.pc.setLocalDescription(offer);
       
-      this.signaling.send({ 
+      const sent = this.signaling.send({ 
         type: "offer", 
         offer: offer, 
         targetId: this.targetId,
         sessionId: this.sessionId
       } as any);
-      console.log(`[WebRTC] offer sent|queued`);
+      console.log(`[WebRTC] offer ${sent ? 'sent' : 'queued'}`);
     } catch (e) {
       console.error(`[WebRTC] negotiation failed reason=`, e);
     }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Play, Pause, Volume2, VolumeX, Maximize, Settings, Loader2 } from "lucide-react";
+import { Play, Pause, Volume2, VolumeX, Maximize, Settings, Loader2, SkipBack, SkipForward } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getGlobalSignaling } from "../webrtc/SignalingClient";
 import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
@@ -29,7 +29,37 @@ export default function Receiver() {
   const [showSettings, setShowSettings] = useState(false);
   const [mediaInfo, setMediaInfo] = useState<{filename?: string, resolution?: string} | null>(null);
   const [webrtcState, setWebrtcState] = useState<string>("");
+  const [isPlayback, setIsPlayback] = useState(false);
+  const dcRef = useRef<RTCDataChannel | null>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playPromiseRef = useRef<Promise<void> | null>(null);
+
+  const safePlay = async () => {
+    if (!videoRef.current) return;
+    try {
+      if (playPromiseRef.current) {
+        await playPromiseRef.current.catch(() => {});
+      }
+      playPromiseRef.current = videoRef.current.play();
+      await playPromiseRef.current;
+      setNeedsUserInteraction(false);
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        console.debug("[Receiver] play() interrupted (AbortError).");
+      } else if (err.name === 'NotAllowedError') {
+        console.warn("[Receiver] Autoplay prevented (NotAllowedError). Retrying muted.");
+        if (videoRef.current) {
+          videoRef.current.muted = true;
+          setIsMuted(true);
+          setNeedsUserInteraction(true);
+          playPromiseRef.current = videoRef.current.play();
+          playPromiseRef.current.catch(() => {});
+        }
+      } else {
+        console.error("[Receiver] Play error:", err);
+      }
+    }
+  };
 
   const formatTime = (time: number) => {
     if (isNaN(time)) return "00:00";
@@ -45,33 +75,42 @@ export default function Receiver() {
   };
 
   const togglePlay = () => {
-    if (videoRef.current) {
-      if (videoRef.current.paused) videoRef.current.play();
+    if (isPlayback && dcRef.current?.readyState === "open") {
+      dcRef.current.send(JSON.stringify({ action: isPlaying ? "pause" : "play" }));
+    } else if (videoRef.current) {
+      if (videoRef.current.paused) safePlay();
       else videoRef.current.pause();
     }
   };
 
   const toggleMute = () => {
     if (videoRef.current) {
-      videoRef.current.muted = !videoRef.current.muted;
-      setIsMuted(videoRef.current.muted);
+      const newMuted = !videoRef.current.muted;
+      videoRef.current.muted = newMuted;
+      setIsMuted(newMuted);
+      localStorage.setItem("webcast-muted", newMuted.toString());
     }
   };
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
     setVolume(val);
+    localStorage.setItem("webcast-volume", val.toString());
     if (videoRef.current) {
       videoRef.current.volume = val;
-      if (val > 0) setIsMuted(false);
+      if (val > 0) {
+        setIsMuted(false);
+        videoRef.current.muted = false;
+        localStorage.setItem("webcast-muted", "false");
+      }
     }
   };
 
   const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
-    if (videoRef.current) {
-      const newTime = (val / 100) * duration;
-      videoRef.current.currentTime = newTime;
+    const newTime = (val / 100) * duration;
+    if (isPlayback && dcRef.current?.readyState === "open") {
+      dcRef.current.send(JSON.stringify({ action: "seek", time: newTime }));
     }
   };
 
@@ -82,6 +121,65 @@ export default function Receiver() {
       document.exitFullscreen();
     }
   };
+
+  useEffect(() => {
+    const savedVol = localStorage.getItem("webcast-volume");
+    const savedMuted = localStorage.getItem("webcast-muted");
+    if (savedVol !== null) setVolume(parseFloat(savedVol));
+    if (savedMuted !== null) setIsMuted(savedMuted === "true");
+  }, []);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = volume;
+      videoRef.current.muted = isMuted;
+    }
+  }, [volume, isMuted]);
+
+
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Prevent shortcut if user is typing in an input
+      if (document.activeElement?.tagName === "INPUT") return;
+      
+      switch (e.key.toLowerCase()) {
+        case " ":
+        case "k":
+          e.preventDefault();
+          togglePlay();
+          break;
+        case "j":
+        case "arrowleft":
+          if (isPlayback && dcRef.current?.readyState === "open") {
+            dcRef.current.send(JSON.stringify({ action: "seek", time: Math.max(0, currentTime - 10) }));
+          }
+          break;
+        case "l":
+        case "arrowright":
+          if (isPlayback && dcRef.current?.readyState === "open") {
+            dcRef.current.send(JSON.stringify({ action: "seek", time: Math.min(duration, currentTime + 10) }));
+          }
+          break;
+        case "arrowup":
+          e.preventDefault();
+          handleVolumeChange({ target: { value: Math.min(1, volume + 0.1).toString() } } as any);
+          break;
+        case "arrowdown":
+          e.preventDefault();
+          handleVolumeChange({ target: { value: Math.max(0, volume - 0.1).toString() } } as any);
+          break;
+        case "m":
+          toggleMute();
+          break;
+        case "f":
+          toggleFullscreen();
+          break;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [togglePlay, isPlayback, currentTime, duration, volume, toggleMute]);
 
   useEffect(() => {
     console.log("[App] role=receiver build=2026-09-20-round3");
@@ -163,7 +261,7 @@ export default function Receiver() {
           setStatus("");
         }
       } else if (msg.type === "media-play") {
-        videoRef.current?.play().catch(console.error);
+        safePlay();
       } else if (msg.type === "media-pause") {
         videoRef.current?.pause();
       } else if (msg.type === "media-seek") {
@@ -174,6 +272,18 @@ export default function Receiver() {
     peer.onTrack = (track) => {
       console.log("Received track", track.kind);
       
+      // Attempt to configure buffer targets for smoothness
+      peer.pc.getReceivers().forEach(receiver => {
+        try {
+          if ('playoutDelayHint' in receiver) {
+            (receiver as any).playoutDelayHint = 0.5; // 500ms
+          }
+          if ('jitterBufferTarget' in receiver) {
+            (receiver as any).jitterBufferTarget = 500; // 500ms
+          }
+        } catch (e) {}
+      });
+
       if (!mediaStream.getTracks().includes(track)) {
         mediaStream.addTrack(track);
       }
@@ -181,20 +291,38 @@ export default function Receiver() {
       if (videoRef.current) {
         if (videoRef.current.srcObject !== mediaStream) {
           videoRef.current.srcObject = mediaStream;
-        } else {
-          // Force video element to detect newly added tracks
-          videoRef.current.srcObject = null;
-          videoRef.current.srcObject = mediaStream;
         }
         
         setHasMedia(true);
         setMediaInfo(prev => ({ ...prev, resolution: prev?.resolution || "Live Stream" }));
         setStatus("");
         
-        videoRef.current.play().catch(err => {
-          console.error("Autoplay prevented:", err);
-          setNeedsUserInteraction(true);
-        });
+        safePlay();
+      }
+    };
+
+    peer.pc.ondatachannel = (e) => {
+      if (e.channel.label === "control") {
+        dcRef.current = e.channel;
+        e.channel.onmessage = (evt) => {
+          try {
+            const msg = JSON.parse(evt.data);
+            if (msg.type === "heartbeat") {
+              setIsPlayback(msg.state === "playback");
+              if (msg.state === "playback") {
+                setCurrentTime(msg.time);
+                setDuration(msg.duration);
+                setIsPlaying(!msg.paused);
+                if (msg.duration > 0) {
+                  setProgress((msg.time / msg.duration) * 100);
+                }
+              } else {
+                // If it's a screen share, we can't seek
+                setIsPlaying(true);
+              }
+            }
+          } catch (err) {}
+        };
       }
     };
 
@@ -271,7 +399,11 @@ export default function Receiver() {
               <div 
                 className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-40 cursor-pointer backdrop-blur-sm"
                 onClick={() => {
-                  videoRef.current?.play().then(() => setNeedsUserInteraction(false));
+                  if (videoRef.current) {
+                    videoRef.current.muted = false;
+                    setIsMuted(false);
+                    safePlay();
+                  }
                 }}
               >
                 <div className="w-24 h-24 bg-blue-600 rounded-full flex items-center justify-center shadow-[0_0_40px_rgba(37,99,235,0.6)] mb-6 animate-pulse">
@@ -302,24 +434,40 @@ export default function Receiver() {
               
               <div className="flex flex-col gap-3">
                 {/* Progress Bar */}
-                <div className="flex items-center gap-3 w-full">
-                  <span className="text-xs font-mono">{formatTime(currentTime)}</span>
-                  <input 
-                    type="range" 
-                    min="0" max="100" 
-                    value={isNaN(progress) ? 0 : progress}
-                    onChange={handleProgressChange}
-                    className="w-full h-1.5 bg-white/20 rounded-lg appearance-none cursor-pointer accent-blue-500 hover:h-2 transition-all"
-                  />
-                  <span className="text-xs font-mono">{formatTime(duration)}</span>
-                </div>
+                {isPlayback && (
+                  <div className="flex items-center gap-3 w-full">
+                    <span className="text-xs font-mono">{formatTime(currentTime)}</span>
+                    <input 
+                      type="range" 
+                      min="0" max="100" 
+                      value={isNaN(progress) ? 0 : progress}
+                      onChange={handleProgressChange}
+                      className="w-full h-1.5 bg-white/20 rounded-lg appearance-none cursor-pointer accent-blue-500 hover:h-2 transition-all"
+                    />
+                    <span className="text-xs font-mono">{formatTime(duration)}</span>
+                  </div>
+                )}
 
                 {/* Main Controls */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-6">
+                    {isPlayback && (
+                      <button onClick={() => {
+                        if (dcRef.current?.readyState === "open") dcRef.current.send(JSON.stringify({ action: "seek", time: Math.max(0, currentTime - 10) }));
+                      }} className="hover:text-blue-400 transition-colors">
+                        <SkipBack className="w-5 h-5 fill-current" />
+                      </button>
+                    )}
                     <button onClick={togglePlay} className="hover:text-blue-400 transition-colors">
                       {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current" />}
                     </button>
+                    {isPlayback && (
+                      <button onClick={() => {
+                        if (dcRef.current?.readyState === "open") dcRef.current.send(JSON.stringify({ action: "seek", time: Math.min(duration, currentTime + 10) }));
+                      }} className="hover:text-blue-400 transition-colors">
+                        <SkipForward className="w-5 h-5 fill-current" />
+                      </button>
+                    )}
                     
                     <div className="flex items-center gap-2 group">
                       <button onClick={toggleMute} className="hover:text-blue-400 transition-colors">

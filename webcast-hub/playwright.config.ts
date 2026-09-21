@@ -5,6 +5,7 @@ export default defineConfig({
   fullyParallel: false, // Run sequentially to avoid cross-test interference on the worker
   forbidOnly: !!process.env.CI,
   retries: 0,
+  timeout: 60000,
   workers: 1,
   reporter: 'list',
   use: {

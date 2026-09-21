@@ -12,10 +12,19 @@ test.describe('WebCast Hub E2E', () => {
   async function setupLogging(page: any, name: string) {
     page.on('console', (msg: any) => {
       console.log(`[${name} Browser] ${msg.type()}: ${msg.text()}`);
+      if (msg.type() === 'error') {
+        const text = msg.text();
+        if (text.includes("Failed to load resource: the server responded with a status of 404") ||
+            text.includes("favicon.ico")) {
+          return; // Ignore favicon 404s
+        }
+        throw new Error(`Unexpected console.error in ${name}: ${text}`);
+      }
     });
     
     page.on('pageerror', (err: any) => {
       console.error(`[${name} Browser] Page Error: ${err.message}`);
+      throw new Error(`Page error in ${name}: ${err.message}`);
     });
 
     await page.addInitScript(() => {

@@ -1,9 +1,29 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Simulate Extension Sender', () => {
+  async function setupLogging(page: any, name: string) {
+    page.on('console', (msg: any) => {
+      console.log(`[${name} Browser] ${msg.type()}: ${msg.text()}`);
+      if (msg.type() === 'error') {
+        const text = msg.text();
+        if (text.includes("Failed to load resource: the server responded with a status of 404") ||
+            text.includes("favicon.ico")) {
+          return; // Ignore favicon 404s
+        }
+        throw new Error(`Unexpected console.error in ${name}: ${text}`);
+      }
+    });
+    
+    page.on('pageerror', (err: any) => {
+      console.error(`[${name} Browser] Page Error: ${err.message}`);
+      throw new Error(`Page error in ${name}: ${err.message}`);
+    });
+  }
+
   test('Receiver connects after Extension Sender', async ({ page, context }) => {
     // We will inject the exact logic of offscreen.js into a normal page to simulate the Extension.
     const senderPage = await context.newPage();
+    await setupLogging(senderPage, 'Sender');
     await senderPage.goto('/');
 
     // We generate a room
@@ -18,7 +38,8 @@ test.describe('Simulate Extension Sender', () => {
     // Now we simulate offscreen.js in the sender page
     await senderPage.evaluate(async (roomId) => {
       // Simulate offscreen.js EXACTLY
-      let ws = new WebSocket(`ws://localhost:8787/api/rooms/${roomId}/ws?type=sender&clientId=ext-1234`);
+      const token = sessionStorage.getItem("ownerToken");
+      let ws = new WebSocket(`ws://localhost:8787/api/rooms/${roomId}/ws?type=sender&clientId=ext-1234&token=${token}`);
       let pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
       
       ws.onopen = async () => {
@@ -66,6 +87,7 @@ test.describe('Simulate Extension Sender', () => {
 
     // Now Receiver connects
     const receiverPage = await context.newPage();
+    await setupLogging(receiverPage, 'Receiver');
     await receiverPage.goto(`/receiver/${roomCode}`);
 
     // Receiver should show SENDER PRESENT

@@ -74,10 +74,44 @@ export default function Dashboard() {
     
     if (!pc) {
       pc = new WebRTCPeerConnection(signalingRef.current, receiverId);
-      pc.onConnectionStateChange = () => {
+      let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+      pc.onConnectionStateChange = (state) => {
          let count = 0;
          pcMapRef.current.forEach(p => { if (p.pc.connectionState === 'connected') count++; });
          setConnectedCount(count);
+         
+         if (state === 'connected') {
+            if (disconnectTimer) clearTimeout(disconnectTimer);
+         } else if (state === 'disconnected') {
+            disconnectTimer = setTimeout(() => {
+               if (pcMapRef.current.get(receiverId)?.pc.connectionState !== 'connected') {
+                  pcMapRef.current.get(receiverId)?.close();
+                  pcMapRef.current.delete(receiverId);
+                  lastNegotiation.current.delete(receiverId);
+               }
+            }, 10000);
+         } else if (state === 'failed' || state === 'closed') {
+            if (disconnectTimer) clearTimeout(disconnectTimer);
+            pcMapRef.current.get(receiverId)?.close();
+            pcMapRef.current.delete(receiverId);
+            lastNegotiation.current.delete(receiverId);
+         }
+      };
+      const dc = pc.createDataChannel('control', { ordered: true });
+      dc.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          // Only process play/pause/seek if we are casting a local video (src is set)
+          if (videoRef.current && videoRef.current.src) {
+            if (msg.action === "play") {
+              videoRef.current.play().catch(() => {});
+            } else if (msg.action === "pause") {
+              videoRef.current.pause();
+            } else if (msg.action === "seek" && typeof msg.time === "number") {
+              videoRef.current.currentTime = msg.time;
+            }
+          }
+        } catch (err) {}
       };
       pcMapRef.current.set(receiverId, pc);
     }
@@ -156,6 +190,7 @@ export default function Dashboard() {
       const res = await fetch(`${baseUrl}/api/rooms`, { method: "POST" });
       const data = await res.json();
       setRoomId(data.roomId);
+      sessionStorage.setItem("ownerToken", data.ownerToken);
       
       setupSignaling(data.roomId, data.ownerToken);
     } catch (e) {
@@ -168,6 +203,29 @@ export default function Dashboard() {
 
 
 
+  useEffect(() => {
+    if (!isConnected) return;
+    const interval = setInterval(() => {
+      const isLocal = videoRef.current && !!videoRef.current.src;
+      const msg = isLocal ? {
+        type: "heartbeat",
+        state: "playback",
+        time: videoRef.current?.currentTime || 0,
+        duration: videoRef.current?.duration || 0,
+        paused: !!videoRef.current?.paused
+      } : {
+        type: "heartbeat",
+        state: "screen"
+      };
+      const msgStr = JSON.stringify(msg);
+      pcMapRef.current.forEach(p => {
+        if (p.controlChannel && p.controlChannel.readyState === 'open') {
+          p.controlChannel.send(msgStr);
+        }
+      });
+    }, 500);
+    return () => clearInterval(interval);
+  }, [isConnected]);
 
   const handleCastChromeTab = async () => {
     if (!roomId) {
@@ -186,6 +244,7 @@ export default function Dashboard() {
       // Check if actual stream returned is larger than 1080p, and apply constraints if needed
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
+        if ('contentHint' in videoTrack) (videoTrack as any).contentHint = 'detail';
         const settings = videoTrack.getSettings();
         if ((settings.height && settings.height > 1080) || (settings.width && settings.width > 1920)) {
           console.log(`[Sender] Downscaling screen capture from ${settings.width}x${settings.height} to 1080p limit`);
@@ -196,8 +255,12 @@ export default function Dashboard() {
           }
         }
       }
-    } catch (err) {
-      console.error("Screen capture failed", err);
+    } catch (err: any) {
+      if (err.name === 'NotAllowedError' || err.name === 'AbortError') {
+        console.info("[Sender] Screen capture cancelled by user.");
+      } else {
+        console.error("Screen capture failed", err);
+      }
       if (!activeStreamRef.current) {
         setStatus("Screen capture cancelled or failed.");
       }
@@ -312,6 +375,10 @@ export default function Dashboard() {
       pcMapRef.current.forEach(pc => pc.close());
       pcMapRef.current.clear();
       lastNegotiation.current.clear();
+
+      stream.getVideoTracks().forEach(track => {
+        if ('contentHint' in track) (track as any).contentHint = 'motion';
+      });
 
       activeStreamRef.current = stream;
       setStatus(`Casting Local Media`);
