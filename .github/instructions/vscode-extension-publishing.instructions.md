@@ -9,7 +9,7 @@ applyTo:
   - **/src/extension.js
   - **/extension/**
   - **/MARKETPLACE*.md
-deployedAt: "2026-09-25T13:00:50.234Z"
+deployedAt: "2026-09-25T13:02:38.224Z"
 ---
 
 # vscode-extension-publishing
