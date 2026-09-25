@@ -592,9 +592,10 @@ export class WebRTCPeerConnection {
       }, 15000);
 
       // CHANGE 5 – include mode in offer message
+      const offerPayload = { type: offerDesc.type, sdp: offerDesc.sdp, mode: this.mode };
       const sent = this.signaling.send({
         type: "offer",
-        offer: { type: offerDesc.type, sdp: offerDesc.sdp, mode: this.mode },
+        offer: offerPayload,
         targetId: this.targetId,
         sessionId: this.sessionId,
       } as any);
@@ -632,10 +633,10 @@ export class WebRTCPeerConnection {
       console.warn("[WebRTC] Ignored offer with empty or missing SDP");
       return;
     }
-    let type = offer.type;
-    if (type !== "offer") {
-      console.warn(`[WebRTC] Invalid offer type '${type}', forcing 'offer'`);
-      type = "offer";
+    let sdpType = offer.type;
+    if (sdpType !== "offer") {
+      console.warn(`[WebRTC] Invalid offer type '${sdpType}', forcing 'offer'`);
+      sdpType = "offer";
     }
 
     // CHANGE 5 – read mode from offer
@@ -647,7 +648,7 @@ export class WebRTCPeerConnection {
     const videoKbps = this._getVideoKbps();
     const tunedSdp = tuneSdp(offer.sdp, { videoMaxKbps: videoKbps });
     try {
-      await this.pc.setRemoteDescription({ type, sdp: tunedSdp } as RTCSessionDescriptionInit);
+      await this.pc.setRemoteDescription(new RTCSessionDescription({ type: sdpType as RTCSdpType, sdp: tunedSdp }));
       await this.flushCandidates();
 
       const answer = await this.pc.createAnswer();
@@ -679,16 +680,16 @@ export class WebRTCPeerConnection {
       console.warn("[WebRTC] Ignored answer with empty or missing SDP");
       return;
     }
-    let type = answer.type;
-    if (type !== "answer") {
-      console.warn(`[WebRTC] Invalid answer type '${type}', forcing 'answer'`);
-      type = "answer";
+    let sdpType = answer.type;
+    if (sdpType !== "answer") {
+      console.warn(`[WebRTC] Invalid answer type '${sdpType}', forcing 'answer'`);
+      sdpType = "answer";
     }
 
     // CHANGE 3 – tune incoming answer SDP
     const videoKbps = this._getVideoKbps();
     const tunedSdp = tuneSdp(answer.sdp, { videoMaxKbps: videoKbps });
-    await this.pc.setRemoteDescription({ type, sdp: tunedSdp } as RTCSessionDescriptionInit);
+    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: sdpType as RTCSdpType, sdp: tunedSdp }));
     await this.flushCandidates();
 
     // CHANGE 3 – re-apply encoding after renegotiation

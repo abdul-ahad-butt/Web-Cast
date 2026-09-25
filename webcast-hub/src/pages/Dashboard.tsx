@@ -52,7 +52,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    console.log("[App] role=sender build=2026-09-24-quality-r1");
+    console.log("[App] role=sender build=2026-09-24-quality-r2");
 
     // CHANGE 4 – re-acquire wakeLock on visibility change
     const onVisibility = () => {

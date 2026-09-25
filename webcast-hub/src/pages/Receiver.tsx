@@ -184,7 +184,7 @@ export default function Receiver() {
   }, [togglePlay, isPlayback, currentTime, duration, volume, toggleMute]);
 
   useEffect(() => {
-    console.log("[App] role=receiver build=2026-09-24-quality-r1");
+    console.log("[App] role=receiver build=2026-09-24-quality-r2");
     if (!roomId) return;
 
     setStatus("Connecting to signaling server...");
