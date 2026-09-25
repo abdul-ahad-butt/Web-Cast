@@ -434,9 +434,6 @@ export default function Receiver() {
         setStatus("Cast ended by sender");
       } else if (msg.type === "offer") {
         // WebRTC offer (tab/screen cast pipeline)
-        if ((msg.offer as any)?.mode === "local-media" || (msg.offer as any)?.mode === "screen") {
-          castMode = (msg.offer as any).mode;
-        }
         stopOfferLoop();
         setStatus("Negotiating connection...");
 

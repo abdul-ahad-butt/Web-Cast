@@ -214,7 +214,6 @@ export default function Dashboard() {
       pc.onConnectionStateChange = (state) => {
         let count = 0;
         pcMapRef.current.forEach(p => { if (p.pc.connectionState === 'connected') count++; });
-        setConnectedCount(count);
 
         if (state === 'connected') {
           if (disconnectTimer) clearTimeout(disconnectTimer);
@@ -336,7 +335,6 @@ export default function Dashboard() {
               lastNegotiation.current.delete(clientId);
               let count = 0;
               pcMapRef.current.forEach(p => { if (p.pc.connectionState === 'connected') count++; });
-              setConnectedCount(count);
             }
           }, 15000);
         }
@@ -379,7 +377,6 @@ export default function Dashboard() {
     signaling.onDisconnect = () => {
       setIsConnected(false);
       setStatus("Not Connected");
-      setConnectedCount(0);
     };
     signaling.connect();
   };
@@ -666,7 +663,6 @@ export default function Dashboard() {
     releaseWakeLock();
     setIsConnected(false);
     setStatus("Not Connected");
-    setConnectedCount(0);
     setMediaInfo(null);
     setUploadProgress(null);
     setIsUploading(false);
