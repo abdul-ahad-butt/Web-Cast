@@ -119,7 +119,7 @@ function applyCodecPreferences(
       const primary = height <= 720
         ? ["video/VP9", "video/H264", "video/VP8"]
         : ["video/H264", "video/VP9", "video/VP8"];
-      const ordered: RTCRtpCodecCapability[] = [];
+      const ordered: any[] = [];
       for (const mime of primary) {
         for (const c of codecs) {
           if (c.mimeType.toLowerCase() === mime.toLowerCase()) ordered.push(c);

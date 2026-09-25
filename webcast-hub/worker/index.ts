@@ -50,7 +50,7 @@ export default {
 
           if (!cfRes.ok) throw new Error(`Cloudflare TURN API returned ${cfRes.status}`);
 
-          const data = await cfRes.json() as { iceServers?: RTCIceServer[] };
+          const data = await cfRes.json() as { iceServers?: any[] };
           // Filter out port-53 URLs (browsers block them)
           const filtered = (data.iceServers || []).map((server: any) => {
             const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
