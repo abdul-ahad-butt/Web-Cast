@@ -41,10 +41,29 @@ export async function getIceServers(): Promise<RTCIceServer[]> {
     const servers: RTCIceServer[] = await res.json();
     cachedServers = servers;
     cacheExpiry = now + CACHE_DURATION_MS;
-    console.log("[WebRTC] TURN/ICE servers fetched from /api/turn:", servers.length, "entries");
+    let stunUrls = 0, turnUrls = 0, hasCreds = false;
+    servers.forEach(s => {
+      if (s.username || s.credential) hasCreds = true;
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+      urls.forEach(u => {
+        if (u.startsWith("stun")) stunUrls++;
+        if (u.startsWith("turn")) turnUrls++;
+      });
+    });
+    console.log(`[WebRTC] ICE config: source=turn stunUrls=${stunUrls} turnUrls=${turnUrls} hasCreds=${hasCreds}`);
     return servers;
   } catch (err: any) {
     console.warn("[WebRTC] /api/turn fetch failed, using STUN-only fallback:", err?.message || err);
+    let stunUrls = 0, turnUrls = 0, hasCreds = false;
+    STUN_FALLBACK.forEach(s => {
+      if (s.username || s.credential) hasCreds = true;
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+      urls.forEach(u => {
+        if (u.startsWith("stun")) stunUrls++;
+        if (u.startsWith("turn")) turnUrls++;
+      });
+    });
+    console.log(`[WebRTC] ICE config: source=fallback stunUrls=${stunUrls} turnUrls=${turnUrls} hasCreds=${hasCreds}`);
     return STUN_FALLBACK;
   }
 }

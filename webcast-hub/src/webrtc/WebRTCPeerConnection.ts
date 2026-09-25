@@ -11,7 +11,7 @@ import {
 
 // CHANGE 8 – build tag
 // Logged in Dashboard.tsx and Receiver.tsx; updated here for reference.
-export const BUILD_TAG = "2026-09-24-quality-r1";
+export const BUILD_TAG = "2026-09-24-quality-r2";
 
 // ─── SDP helper (CHANGE 3) ────────────────────────────────────────────────────
 /**
@@ -220,24 +220,30 @@ export function startSenderStatsLoop(
   let lastBytesSent = 0;
   let lastTimestamp = 0;
 
+  let waitTick = 0;
   const interval = setInterval(async () => {
-    if (onStop()) {
+    if (onStop() || pc.connectionState === "closed") {
       clearInterval(interval);
       return;
     }
-    if (pc.connectionState === "closed") {
-      clearInterval(interval);
+    if (pc.connectionState !== "connected") {
+      if (waitTick % 5 === 0) console.log(`[Stats] waiting for ${receiverId.slice(0, 8)} state=${pc.connectionState}`);
+      waitTick++;
       return;
     }
+    waitTick = 0;
+
     try {
       const reports = await pc.getStats();
       let codec = "", width = 0, height = 0, fps = 0;
       let bytesSent = 0, bitrate = 0;
       let qualityLimit = "none", lost = 0, rtt = 0, pathType = "unknown";
       let packetsSent = 0, packetsLost = 0;
+      let hasVideo = false;
 
       reports.forEach((r: any) => {
         if (r.type === "outbound-rtp" && r.kind === "video") {
+          hasVideo = true;
           bytesSent = r.bytesSent || 0;
           const currentTimestamp = r.timestamp || Date.now();
           if (lastBytesSent > 0 && lastTimestamp > 0 && currentTimestamp > lastTimestamp) {
@@ -266,6 +272,7 @@ export function startSenderStatsLoop(
         }
       });
 
+      if (!hasVideo) return;
       if (packetsSent > 0) lost = Math.round((packetsLost / (packetsSent + packetsLost)) * 100);
 
       console.log(
@@ -286,23 +293,29 @@ export function startReceiverStatsLoop(
   let lastBytesReceived = 0;
   let lastTimestamp = 0;
 
+  let waitTick = 0;
   const interval = setInterval(async () => {
-    if (onStop()) {
+    if (onStop() || pc.connectionState === "closed") {
       clearInterval(interval);
       return;
     }
-    if (pc.connectionState === "closed") {
-      clearInterval(interval);
+    if (pc.connectionState !== "connected") {
+      if (waitTick % 5 === 0) console.log(`[Stats] waiting for sender state=${pc.connectionState}`);
+      waitTick++;
       return;
     }
+    waitTick = 0;
+
     try {
       const reports = await pc.getStats();
       let width = 0, height = 0, fps = 0, bitrate = 0;
       let jitterBuf = 0, lost = 0, freezes = 0, pathType = "unknown";
       let packetsReceived = 0, packetsLost = 0, bytesReceived = 0;
+      let hasVideo = false;
 
       reports.forEach((r: any) => {
         if (r.type === "inbound-rtp" && r.kind === "video") {
+          hasVideo = true;
           bytesReceived = r.bytesReceived || 0;
           const currentTimestamp = r.timestamp || Date.now();
           if (lastBytesReceived > 0 && lastTimestamp > 0 && currentTimestamp > lastTimestamp) {
@@ -325,6 +338,7 @@ export function startReceiverStatsLoop(
         }
       });
 
+      if (!hasVideo) return;
       if (packetsReceived + packetsLost > 0) {
         lost = Math.round((packetsLost / (packetsReceived + packetsLost)) * 100);
       }
@@ -563,18 +577,24 @@ export class WebRTCPeerConnection {
 
       // CHANGE 3 – tune SDP
       const videoKbps = this._getVideoKbps();
-      offer = new RTCSessionDescription({
+      const offerDesc = {
         type: offer.type,
         sdp: tuneSdp(offer.sdp || "", { videoMaxKbps: videoKbps }),
-      });
+      };
 
       console.log(`[WebRTC] offer created`);
-      await this.pc.setLocalDescription(offer);
+      await this.pc.setLocalDescription(offerDesc as RTCSessionDescriptionInit);
+
+      setTimeout(() => {
+        if (!this.stopped && this.pc.connectionState !== "connected") {
+          console.warn(`[WebRTC] receiver ${this.targetId?.slice(0, 8)} still not connected after 15s. states: signaling=${this.pc.signalingState} iceConn=${this.pc.iceConnectionState} conn=${this.pc.connectionState} iceGather=${this.pc.iceGatheringState}`);
+        }
+      }, 15000);
 
       // CHANGE 5 – include mode in offer message
       const sent = this.signaling.send({
         type: "offer",
-        offer: { ...offer, mode: this.mode },
+        offer: { type: offerDesc.type, sdp: offerDesc.sdp, mode: this.mode },
         targetId: this.targetId,
         sessionId: this.sessionId,
       } as any);
@@ -595,7 +615,7 @@ export class WebRTCPeerConnection {
     if (this.pc.localDescription && this.sessionId) {
       this.signaling.send({
         type: "offer",
-        offer: { ...this.pc.localDescription, mode: this.mode },
+        offer: { type: this.pc.localDescription.type, sdp: this.pc.localDescription.sdp, mode: this.mode },
         targetId: this.targetId,
         sessionId: this.sessionId,
       } as any);
@@ -608,6 +628,16 @@ export class WebRTCPeerConnection {
   // ─── Internal handlers ──────────────────────────────────────────────────────
 
   private async handleOffer(offer: RTCSessionDescriptionInit & { mode?: string }) {
+    if (!offer.sdp || typeof offer.sdp !== "string" || offer.sdp.trim() === "") {
+      console.warn("[WebRTC] Ignored offer with empty or missing SDP");
+      return;
+    }
+    let type = offer.type;
+    if (type !== "offer") {
+      console.warn(`[WebRTC] Invalid offer type '${type}', forcing 'offer'`);
+      type = "offer";
+    }
+
     // CHANGE 5 – read mode from offer
     if (offer.mode === "local-media" || offer.mode === "screen") {
       this.mode = offer.mode;
@@ -615,29 +645,50 @@ export class WebRTCPeerConnection {
 
     // CHANGE 3 – tune incoming SDP before setRemoteDescription
     const videoKbps = this._getVideoKbps();
-    const tunedSdp = tuneSdp(offer.sdp || "", { videoMaxKbps: videoKbps });
-    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: offer.type, sdp: tunedSdp }));
-    await this.flushCandidates();
+    const tunedSdp = tuneSdp(offer.sdp, { videoMaxKbps: videoKbps });
+    try {
+      await this.pc.setRemoteDescription({ type, sdp: tunedSdp } as RTCSessionDescriptionInit);
+      await this.flushCandidates();
 
-    const answer = await this.pc.createAnswer();
-    const tunedAnswer = tuneSdp(answer.sdp || "");
-    const finalAnswer = new RTCSessionDescription({ type: answer.type, sdp: tunedAnswer });
-    await this.pc.setLocalDescription(finalAnswer);
+      const answer = await this.pc.createAnswer();
+      const finalAnswer = { type: answer.type || "answer", sdp: tuneSdp(answer.sdp || "") };
+      await this.pc.setLocalDescription(finalAnswer as RTCSessionDescriptionInit);
 
-    this.signaling.send({
-      type: "answer",
-      answer: finalAnswer,
-      targetId: this.targetId,
-      sessionId: this.sessionId,
-    } as any);
+      this.signaling.send({
+        type: "answer",
+        answer: finalAnswer,
+        targetId: this.targetId,
+        sessionId: this.sessionId,
+      } as any);
+    } catch (err) {
+      console.error("[WebRTC] handleOffer failed:", err);
+      if ((this as any)._requestOfferRetries === undefined) (this as any)._requestOfferRetries = 0;
+      if ((this as any)._requestOfferRetries < 3) {
+        (this as any)._requestOfferRetries++;
+        console.warn(`[WebRTC] Retrying request-offer in 2s (retry ${(this as any)._requestOfferRetries}/3)`);
+        setTimeout(() => {
+          this.signaling.send({ type: "request-offer", targetId: this.targetId, sessionId: this.sessionId } as any);
+        }, 2000);
+      }
+    }
   }
 
   private async handleAnswer(answer: RTCSessionDescriptionInit) {
     console.log(`[WebRTC] answer received from ${this.targetId?.slice(0, 8) || "unknown"}`);
+    if (!answer.sdp || typeof answer.sdp !== "string" || answer.sdp.trim() === "") {
+      console.warn("[WebRTC] Ignored answer with empty or missing SDP");
+      return;
+    }
+    let type = answer.type;
+    if (type !== "answer") {
+      console.warn(`[WebRTC] Invalid answer type '${type}', forcing 'answer'`);
+      type = "answer";
+    }
+
     // CHANGE 3 – tune incoming answer SDP
     const videoKbps = this._getVideoKbps();
-    const tunedSdp = tuneSdp(answer.sdp || "", { videoMaxKbps: videoKbps });
-    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: answer.type, sdp: tunedSdp }));
+    const tunedSdp = tuneSdp(answer.sdp, { videoMaxKbps: videoKbps });
+    await this.pc.setRemoteDescription({ type, sdp: tunedSdp } as RTCSessionDescriptionInit);
     await this.flushCandidates();
 
     // CHANGE 3 – re-apply encoding after renegotiation
