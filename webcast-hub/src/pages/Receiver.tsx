@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Play, Pause, Volume2, VolumeX, Maximize, Settings, Loader2, SkipBack, SkipForward } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getGlobalSignaling } from "../webrtc/SignalingClient";
-import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
+import { WebRTCPeerConnection, startReceiverStatsLoop } from "../webrtc/WebRTCPeerConnection";
+import { getIceServers, makePcConfig } from "../webrtc/iceServers";
+import { JITTER_TARGET_MS } from "../webrtc/qualityConfig";
 
 export default function Receiver() {
   const { roomId } = useParams();
@@ -182,18 +184,30 @@ export default function Receiver() {
   }, [togglePlay, isPlayback, currentTime, duration, volume, toggleMute]);
 
   useEffect(() => {
-    console.log("[App] role=receiver build=2026-09-20-round3");
+    console.log("[App] role=receiver build=2026-09-24-quality-r1");
     if (!roomId) return;
 
     setStatus("Connecting to signaling server...");
     const signaling = getGlobalSignaling(roomId, "receiver");
-    const peer = new WebRTCPeerConnection(signaling);
+
+    // CHANGE 2 – fetch TURN servers before creating PC
+    let peer: WebRTCPeerConnection;
+    let statsInterval: ReturnType<typeof setInterval> | null = null;
+    let stopped = false;
+
+    (async () => {
+      const iceServers = await getIceServers();
+      const pcConfig = makePcConfig(iceServers);
+      peer = new WebRTCPeerConnection(signaling, undefined, undefined, pcConfig);
+      initPeer(peer);
+    })();
 
     const mediaStream = new MediaStream();
-
     let isSenderPresent = false;
     let retryCount = 0;
     let offerTimeout: ReturnType<typeof setTimeout> | null = null;
+    // CHANGE 5 – track mode received from offer
+    let castMode: "local-media" | "screen" = "screen";
 
     const stopOfferLoop = () => {
       if (offerTimeout) clearTimeout(offerTimeout);
@@ -246,11 +260,12 @@ export default function Receiver() {
       } else if (msg.type === "peer-left" && msg.role === "sender") {
         isSenderPresent = false;
         setSenderConnected(false);
-        // Do not drop media immediately - let WebRTC connection state dictate media presence
-        // setHasMedia(false); 
-        // setStatus("Sender disconnected. Waiting...");
         stopOfferLoop();
       } else if (msg.type === "offer") {
+        // CHANGE 5 – read mode from offer
+        if ((msg.offer as any)?.mode === "local-media" || (msg.offer as any)?.mode === "screen") {
+          castMode = (msg.offer as any).mode;
+        }
         stopOfferLoop();
         setStatus("Negotiating connection...");
       } else if (msg.type === "media-url") {
@@ -270,83 +285,94 @@ export default function Receiver() {
       }
     });
 
-    peer.onTrack = (track) => {
-      console.log("Received track", track.kind);
-      
-      // Attempt to configure buffer targets for smoothness
-      peer.pc.getReceivers().forEach(receiver => {
-        try {
-          if ('playoutDelayHint' in receiver) {
-            (receiver as any).playoutDelayHint = 0.5; // 500ms
-          }
-          if ('jitterBufferTarget' in receiver) {
-            (receiver as any).jitterBufferTarget = 500; // 500ms
-          }
-        } catch (e) {}
-      });
-
-      if (!mediaStream.getTracks().includes(track)) {
-        mediaStream.addTrack(track);
-      }
-
-      if (videoRef.current) {
-        if (videoRef.current.srcObject !== mediaStream) {
-          videoRef.current.srcObject = mediaStream;
-        }
+    function initPeer(p: WebRTCPeerConnection) {
+      p.onTrack = (track) => {
+        console.log("Received track", track.kind);
         
-        setHasMedia(true);
-        setMediaInfo(prev => ({ ...prev, resolution: prev?.resolution || "Live Stream" }));
-        setStatus("");
-        
-        safePlay();
-      }
-    };
-
-    peer.pc.ondatachannel = (e) => {
-      if (e.channel.label === "control") {
-        dcRef.current = e.channel;
-        e.channel.onmessage = (evt) => {
+        // CHANGE 5 – set jitter buffer target based on mode
+        p.pc.getReceivers().forEach(receiver => {
           try {
-            const msg = JSON.parse(evt.data);
-            if (msg.type === "heartbeat") {
-              setIsPlayback(msg.state === "playback");
-              if (msg.state === "playback") {
-                setCurrentTime(msg.time);
-                setDuration(msg.duration);
-                setIsPlaying(!msg.paused);
-                if (msg.duration > 0) {
-                  setProgress((msg.time / msg.duration) * 100);
-                }
-              } else {
-                // If it's a screen share, we can't seek
-                setIsPlaying(true);
-              }
+            const targetMs = JITTER_TARGET_MS[castMode];
+            if ('jitterBufferTarget' in receiver) {
+              (receiver as any).jitterBufferTarget = targetMs;
+              console.log(`[WebRTC] jitterBufferTarget set to ${targetMs}ms (mode=${castMode})`);
+            } else if ('playoutDelayHint' in receiver) {
+              (receiver as any).playoutDelayHint = targetMs / 1000;
+              console.log(`[WebRTC] playoutDelayHint set to ${targetMs / 1000}s (jitterBufferTarget not supported)`);
+            } else {
+              console.log('[WebRTC] Neither jitterBufferTarget nor playoutDelayHint supported, skipping');
             }
-          } catch (err) {}
-        };
-      }
-    };
+          } catch (e) { console.warn('[WebRTC] Failed to set jitter buffer hint:', e); }
+        });
 
-    peer.onConnectionStateChange = (state) => {
-      console.log("WebRTC state:", state);
-      setWebrtcState(state);
-      if (state === "disconnected" || state === "failed") {
-        setStatus("Stream disconnected / Reconnecting...");
-        if (isSenderPresent) startOfferLoop();
-      } else if (state === "connecting") {
-        setStatus("Connecting...");
-      } else if (state === "connected") {
-        setStatus("");
-        stopOfferLoop();
-      }
-    };
+        if (!mediaStream.getTracks().includes(track)) {
+          mediaStream.addTrack(track);
+        }
+
+        if (videoRef.current) {
+          if (videoRef.current.srcObject !== mediaStream) {
+            videoRef.current.srcObject = mediaStream;
+          }
+          
+          setHasMedia(true);
+          setMediaInfo(prev => ({ ...prev, resolution: prev?.resolution || "Live Stream" }));
+          setStatus("");
+          
+          safePlay();
+
+          // CHANGE 7 – start receiver stats loop
+          if (!statsInterval) {
+            statsInterval = startReceiverStatsLoop(p.pc, () => stopped);
+          }
+        }
+      };
+
+      p.pc.ondatachannel = (e) => {
+        if (e.channel.label === "control") {
+          dcRef.current = e.channel;
+          e.channel.onmessage = (evt) => {
+            try {
+              const msg = JSON.parse(evt.data);
+              if (msg.type === "heartbeat") {
+                setIsPlayback(msg.state === "playback");
+                if (msg.state === "playback") {
+                  setCurrentTime(msg.time);
+                  setDuration(msg.duration);
+                  setIsPlaying(!msg.paused);
+                  if (msg.duration > 0) {
+                    setProgress((msg.time / msg.duration) * 100);
+                  }
+                } else {
+                  // If it's a screen share, we can't seek
+                  setIsPlaying(true);
+                }
+              }
+            } catch (err) {}
+          };
+        }
+      };
+
+      p.onConnectionStateChange = (state) => {
+        console.log("WebRTC state:", state);
+        setWebrtcState(state);
+        if (state === "disconnected" || state === "failed") {
+          setStatus("Stream disconnected / Reconnecting...");
+          if (isSenderPresent) startOfferLoop();
+        } else if (state === "connecting") {
+          setStatus("Connecting...");
+        } else if (state === "connected") {
+          setStatus("");
+          stopOfferLoop();
+        }
+      };
+    }
 
     (window as any).__wcStats = () => {
-      return {
+      return peer ? {
         state: peer.pc.connectionState,
         ice: peer.pc.iceConnectionState,
         signaling: peer.pc.signalingState
-      };
+      } : {};
     };
 
     (window as any)._manualRetryOffer = () => {
@@ -356,12 +382,15 @@ export default function Receiver() {
     signaling.connect();
 
     return () => {
+      stopped = true;
       unsub();
-      peer.close();
+      if (statsInterval) clearInterval(statsInterval);
+      if (peer) peer.close();
       stopOfferLoop();
       delete (window as any)._manualRetryOffer;
     };
   }, [roomId]);
+
 
   return (
     <div className="min-h-screen text-foreground flex flex-col items-center justify-center relative overflow-hidden">
@@ -378,7 +407,8 @@ export default function Receiver() {
           >
             <video 
               ref={videoRef}
-              autoPlay 
+              autoPlay
+              playsInline
               className="w-full h-full object-contain"
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}

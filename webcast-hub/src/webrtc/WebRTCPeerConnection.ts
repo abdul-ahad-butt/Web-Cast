@@ -1,5 +1,349 @@
 import { SignalingClient } from "./SignalingClient";
 import type { SignalingMessage } from "./SignalingClient";
+import {
+  videoMaxBitrate,
+  multiReceiverFactor,
+  MULTI_RECEIVER_FLOOR_BPS,
+  OPUS_MAX_BITRATE,
+  SCREEN_CONTENT_HINT,
+  STATS_LOG,
+} from "./qualityConfig";
+
+// CHANGE 8 – build tag
+// Logged in Dashboard.tsx and Receiver.tsx; updated here for reference.
+export const BUILD_TAG = "2026-09-24-quality-r1";
+
+// ─── SDP helper (CHANGE 3) ────────────────────────────────────────────────────
+/**
+ * Tune Opus and video fmtp lines in an SDP string.
+ * Applies stereo Opus at high bitrate and sets x-google-*-bitrate hints.
+ * Returns the original SDP on any error.
+ */
+export function tuneSdp(
+  sdp: string,
+  opts: { videoMaxKbps?: number; opusKbps?: number } = {}
+): string {
+  try {
+    const opusKbps = opts.opusKbps ?? Math.round(OPUS_MAX_BITRATE / 1000);
+    const videoKbps = opts.videoMaxKbps;
+
+    let out = sdp;
+
+    // Opus: force stereo + high bitrate + inband FEC, no DTX
+    out = out.replace(
+      /(a=fmtp:\d+ [^\r\n]*)/g,
+      (line) => {
+        // Only modify lines that contain useinbandfec or are Opus fmtp
+        if (!/useinbandfec|minptime|opus\/48000/i.test(line) && !/ 111 /.test(sdp.slice(0, sdp.indexOf(line)))) {
+          // Heuristic: check if this fmtp PT matches an Opus payload type
+          const ptMatch = line.match(/a=fmtp:(\d+)/);
+          if (!ptMatch) return line;
+          const pt = ptMatch[1];
+          // Check the rtpmap for this PT
+          if (!new RegExp(`a=rtpmap:${pt} opus/`, "i").test(out)) return line;
+        }
+        if (!/opus\/48000/i.test(out.slice(0, out.indexOf(line))) &&
+            !/(useinbandfec|minptime)/i.test(line)) {
+          return line; // not Opus fmtp
+        }
+        // Strip existing stereo/sprop/maxaverage/dtx/fec overrides, then re-apply
+        let cleaned = line.replace(/;?(stereo|sprop-stereo|maxaveragebitrate|usedtx|useinbandfec)=[^;]*/gi, "");
+        cleaned = cleaned.replace(/\s*$/, "");
+        return `${cleaned};stereo=1;sprop-stereo=1;maxaveragebitrate=${opusKbps * 1000};useinbandfec=1;usedtx=0`;
+      }
+    );
+
+    // Simpler Opus pass: match the common pattern directly
+    out = out.replace(
+      /(a=fmtp:\d+ .*useinbandfec=\d+[^\r\n]*)/g,
+      (line) => {
+        let cleaned = line
+          .replace(/;?(stereo=[^;]*)/gi, "")
+          .replace(/;?(sprop-stereo=[^;]*)/gi, "")
+          .replace(/;?(maxaveragebitrate=[^;]*)/gi, "")
+          .replace(/;?(usedtx=[^;]*)/gi, "")
+          .replace(/;?(useinbandfec=[^;]*)/gi, "");
+        cleaned = cleaned.replace(/\s*$/, "");
+        return `${cleaned};stereo=1;sprop-stereo=1;maxaveragebitrate=${opusKbps * 1000};useinbandfec=1;usedtx=0`;
+      }
+    );
+
+    // Video fmtp: append x-google bitrate hints
+    if (videoKbps && videoKbps > 0) {
+      const minKbps = Math.round(videoKbps * 0.5);
+      const startKbps = Math.round(videoKbps * 0.6);
+      // Append to existing video fmtp lines (VP8/VP9/H264)
+      out = out.replace(
+        /(a=fmtp:\d+ [^\r\n]*(?:profile-level-id|packetization-mode|apt=\d|profile-id)[^\r\n]*)/g,
+        (line) => {
+          // Skip rtx apt lines
+          if (/apt=\d/.test(line)) return line;
+          let cleaned = line
+            .replace(/;?x-google-min-bitrate=[^;]*/gi, "")
+            .replace(/;?x-google-start-bitrate=[^;]*/gi, "")
+            .replace(/;?x-google-max-bitrate=[^;]*/gi, "");
+          cleaned = cleaned.replace(/\s*$/, "");
+          return `${cleaned};x-google-min-bitrate=${minKbps};x-google-start-bitrate=${startKbps};x-google-max-bitrate=${videoKbps}`;
+        }
+      );
+    }
+
+    return out;
+  } catch (err) {
+    console.warn("[WebRTC] tuneSdp error, returning original SDP:", err);
+    return sdp;
+  }
+}
+
+// ─── Codec preference helper (CHANGE 3) ──────────────────────────────────────
+function applyCodecPreferences(
+  transceiver: RTCRtpTransceiver,
+  kind: "video" | "audio",
+  height: number
+): void {
+  try {
+    if (!RTCRtpSender.getCapabilities) {
+      console.log("[WebRTC] RTCRtpSender.getCapabilities not supported, skipping setCodecPreferences");
+      return;
+    }
+    const caps = RTCRtpSender.getCapabilities(kind);
+    if (!caps) {
+      console.log("[WebRTC] getCapabilities returned null for", kind, "- skipping setCodecPreferences");
+      return;
+    }
+    const codecs = caps.codecs;
+
+    if (kind === "video") {
+      // Preferred order: <=720 → VP9, H264, VP8; >720 → H264, VP9, VP8
+      // RTX/RED/ULPFEC go after the primary codecs
+      const primary = height <= 720
+        ? ["video/VP9", "video/H264", "video/VP8"]
+        : ["video/H264", "video/VP9", "video/VP8"];
+      const ordered: RTCRtpCodecCapability[] = [];
+      for (const mime of primary) {
+        for (const c of codecs) {
+          if (c.mimeType.toLowerCase() === mime.toLowerCase()) ordered.push(c);
+        }
+      }
+      // Append rtx/red/ulpfec
+      for (const c of codecs) {
+        if (!ordered.includes(c)) ordered.push(c);
+      }
+      if (ordered.length > 0) {
+        transceiver.setCodecPreferences(ordered);
+      }
+    }
+  } catch (err) {
+    console.warn("[WebRTC] setCodecPreferences failed:", err);
+  }
+}
+
+// ─── Encoding quality setter (CHANGE 3) ──────────────────────────────────────
+/**
+ * Apply maxBitrate, scaleResolutionDownBy, priority, and optionally maxFramerate
+ * to every RTCRtpSender on `pc`. Called after addTrack and after renegotiation.
+ */
+export async function applyEncodingParams(
+  pc: RTCPeerConnection,
+  mode: "local-media" | "screen",
+  receiverCount: number
+): Promise<void> {
+  const factor = multiReceiverFactor(receiverCount);
+
+  for (const sender of pc.getSenders()) {
+    const track = sender.track;
+    if (!track) continue;
+
+    try {
+      if (track.kind === "video") {
+        // Content hint
+        if ("contentHint" in track) {
+          try {
+            (track as any).contentHint = mode === "local-media" ? "motion" : SCREEN_CONTENT_HINT;
+          } catch {}
+        }
+
+        const settings = track.getSettings();
+        const height = settings.height || 480;
+        const rawMax = videoMaxBitrate(height);
+        const scaledMax = Math.max(MULTI_RECEIVER_FLOOR_BPS, Math.floor(rawMax * factor));
+
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        const enc = params.encodings[0];
+        enc.maxBitrate = scaledMax;
+        enc.scaleResolutionDownBy = 1;
+        (enc as any).priority = "high";
+        (enc as any).networkPriority = "high";
+        if (mode === "local-media") {
+          delete enc.maxFramerate; // no framerate cap for file playback
+        } else {
+          enc.maxFramerate = 60;
+        }
+
+        // degradationPreference
+        if (mode === "local-media") {
+          (params as any).degradationPreference = "maintain-resolution";
+        } else {
+          (params as any).degradationPreference = "balanced";
+        }
+
+        await sender.setParameters(params);
+        console.log(
+          `[WebRTC] video encoding set: height=${height} maxBitrate=${scaledMax} factor=${factor} mode=${mode}`
+        );
+      } else if (track.kind === "audio") {
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        params.encodings[0].maxBitrate = OPUS_MAX_BITRATE;
+        await sender.setParameters(params);
+        console.log(`[WebRTC] audio encoding set: maxBitrate=${OPUS_MAX_BITRATE}`);
+      }
+    } catch (err) {
+      console.warn(`[WebRTC] setParameters failed for ${track.kind} track:`, err);
+    }
+  }
+}
+
+// ─── Stats logger (CHANGE 7) ─────────────────────────────────────────────────
+export function startSenderStatsLoop(
+  pc: RTCPeerConnection,
+  receiverId: string,
+  onStop: () => boolean // return true to stop
+): ReturnType<typeof setInterval> | null {
+  if (!STATS_LOG) return null;
+  
+  let lastBytesSent = 0;
+  let lastTimestamp = 0;
+
+  const interval = setInterval(async () => {
+    if (onStop()) {
+      clearInterval(interval);
+      return;
+    }
+    if (pc.connectionState === "closed") {
+      clearInterval(interval);
+      return;
+    }
+    try {
+      const reports = await pc.getStats();
+      let codec = "", width = 0, height = 0, fps = 0;
+      let bytesSent = 0, bitrate = 0;
+      let qualityLimit = "none", lost = 0, rtt = 0, pathType = "unknown";
+      let packetsSent = 0, packetsLost = 0;
+
+      reports.forEach((r: any) => {
+        if (r.type === "outbound-rtp" && r.kind === "video") {
+          bytesSent = r.bytesSent || 0;
+          const currentTimestamp = r.timestamp || Date.now();
+          if (lastBytesSent > 0 && lastTimestamp > 0 && currentTimestamp > lastTimestamp) {
+            bitrate = ((bytesSent - lastBytesSent) * 8) / (currentTimestamp - lastTimestamp);
+          }
+          lastBytesSent = bytesSent;
+          lastTimestamp = currentTimestamp;
+          
+          fps = r.framesPerSecond || 0;
+          qualityLimit = r.qualityLimitationReason || "none";
+          packetsSent = r.packetsSent || 0;
+          if (r.codecId) {
+            const codecReport = (reports as any).get(r.codecId);
+            if (codecReport) codec = codecReport.mimeType || "";
+          }
+          if (r.frameWidth) width = r.frameWidth;
+          if (r.frameHeight) height = r.frameHeight;
+        }
+        if (r.type === "remote-inbound-rtp" && r.kind === "video") {
+          packetsLost = r.packetsLost || 0;
+          rtt = Math.round((r.roundTripTime || 0) * 1000);
+        }
+        if (r.type === "candidate-pair" && r.state === "succeeded" && r.nominated) {
+          const local = (reports as any).get(r.localCandidateId);
+          if (local) pathType = local.candidateType || "unknown";
+        }
+      });
+
+      if (packetsSent > 0) lost = Math.round((packetsLost / (packetsSent + packetsLost)) * 100);
+
+      console.log(
+        `[Stats][Sender] rx=${receiverId.slice(0, 8)} codec=${codec} res=${width}x${height} fps=${Math.round(fps)} bitrate=${Math.round(bitrate)} limit=${qualityLimit} lost=${lost}% rtt=${rtt}ms path=${pathType}`
+      );
+    } catch {}
+  }, 2000);
+
+  return interval;
+}
+
+export function startReceiverStatsLoop(
+  pc: RTCPeerConnection,
+  onStop: () => boolean
+): ReturnType<typeof setInterval> | null {
+  if (!STATS_LOG) return null;
+  
+  let lastBytesReceived = 0;
+  let lastTimestamp = 0;
+
+  const interval = setInterval(async () => {
+    if (onStop()) {
+      clearInterval(interval);
+      return;
+    }
+    if (pc.connectionState === "closed") {
+      clearInterval(interval);
+      return;
+    }
+    try {
+      const reports = await pc.getStats();
+      let width = 0, height = 0, fps = 0, bitrate = 0;
+      let jitterBuf = 0, lost = 0, freezes = 0, pathType = "unknown";
+      let packetsReceived = 0, packetsLost = 0, bytesReceived = 0;
+
+      reports.forEach((r: any) => {
+        if (r.type === "inbound-rtp" && r.kind === "video") {
+          bytesReceived = r.bytesReceived || 0;
+          const currentTimestamp = r.timestamp || Date.now();
+          if (lastBytesReceived > 0 && lastTimestamp > 0 && currentTimestamp > lastTimestamp) {
+            bitrate = ((bytesReceived - lastBytesReceived) * 8) / (currentTimestamp - lastTimestamp);
+          }
+          lastBytesReceived = bytesReceived;
+          lastTimestamp = currentTimestamp;
+
+          fps = r.framesPerSecond || 0;
+          jitterBuf = Math.round((r.jitterBufferDelay || 0) * 1000);
+          packetsReceived = r.packetsReceived || 0;
+          packetsLost = r.packetsLost || 0;
+          freezes = r.freezeCount || 0;
+          if (r.frameWidth) width = r.frameWidth;
+          if (r.frameHeight) height = r.frameHeight;
+        }
+        if (r.type === "candidate-pair" && r.state === "succeeded" && r.nominated) {
+          const local = (reports as any).get(r.localCandidateId);
+          if (local) pathType = local.candidateType || "unknown";
+        }
+      });
+
+      if (packetsReceived + packetsLost > 0) {
+        lost = Math.round((packetsLost / (packetsReceived + packetsLost)) * 100);
+      }
+
+      console.log(
+        `[Stats][Receiver] res=${width}x${height} fps=${Math.round(fps)} bitrate=${Math.round(bitrate)} jitterBuf=${jitterBuf}ms lost=${lost}% freezes=${freezes} path=${pathType}`
+      );
+    } catch {}
+  }, 2000);
+
+  return interval;
+}
+
+// ─── Main peer connection class ───────────────────────────────────────────────
+
+// ICE restart state per instance (CHANGE 6)
+const ICE_RESTART_BACKOFFS = [1000, 2000, 4000, 8000, 8000];
+
+export type CastMode = "local-media" | "screen";
 
 export class WebRTCPeerConnection {
   public pc: RTCPeerConnection;
@@ -7,33 +351,50 @@ export class WebRTCPeerConnection {
   public targetId?: string;
   public sessionId?: string;
   private unsubscribe?: () => void;
-  
+
   public onTrack?: (track: MediaStreamTrack, streams: readonly MediaStream[]) => void;
   public onDataChannel?: (channel: RTCDataChannel) => void;
   public onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
-  
+
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private lastNegotiationTime = 0;
   private consecutiveFailures = 0;
 
-  constructor(signaling: SignalingClient, targetId?: string, sessionId?: string) {
+  // CHANGE 6 – ICE restart
+  private iceRestartAttempts = 0;
+  private iceRestartTimer?: ReturnType<typeof setTimeout>;
+  public onIceRestart?: () => Promise<void>; // set by Dashboard to trigger renegotiation
+
+  // Mode for quality/jitter config
+  public mode: CastMode = "screen";
+  public receiverCount = 1;
+
+  // Stats loop handle
+  private statsInterval: ReturnType<typeof setInterval> | null = null;
+  private stopped = false;
+
+  controlChannel?: RTCDataChannel;
+
+  constructor(signaling: SignalingClient, targetId?: string, sessionId?: string, pcConfig?: RTCConfiguration) {
     this.signaling = signaling;
     this.targetId = targetId;
-    this.sessionId = sessionId; // Receiver might receive it via offer, Sender generates it
-    
-    this.pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-      ],
+    this.sessionId = sessionId;
+
+    // CHANGE 2 – use provided config (with TURN) or a safe default
+    this.pc = new RTCPeerConnection(pcConfig ?? {
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      bundlePolicy: "max-bundle",
+      rtcpMuxPolicy: "require",
+      iceCandidatePoolSize: 2,
     });
 
     this.pc.onicecandidate = (event) => {
       if (event.candidate && this.sessionId) {
-        this.signaling.send({ 
-          type: "ice-candidate", 
-          candidate: event.candidate, 
+        this.signaling.send({
+          type: "ice-candidate",
+          candidate: event.candidate,
           targetId: this.targetId,
-          sessionId: this.sessionId
+          sessionId: this.sessionId,
         } as any);
       }
     };
@@ -47,27 +408,40 @@ export class WebRTCPeerConnection {
     };
 
     this.pc.onconnectionstatechange = () => {
-      console.log(`[WebRTC] connection state = ${this.pc.connectionState} for ${this.targetId?.slice(0, 8) || 'unknown'}`);
-      this.onConnectionStateChange?.(this.pc.connectionState);
+      const state = this.pc.connectionState;
+      console.log(`[WebRTC] connection state = ${state} for ${this.targetId?.slice(0, 8) || "unknown"}`);
+      this.onConnectionStateChange?.(state);
+
+      // CHANGE 2 – log candidate path on connected
+      if (state === "connected") {
+        this._logCandidatePath();
+      }
     };
 
     this.pc.oniceconnectionstatechange = () => {
-      console.log(`[WebRTC] ice state = ${this.pc.iceConnectionState} for ${this.targetId?.slice(0, 8) || 'unknown'}`);
-      if (this.pc.iceConnectionState === "disconnected" || this.pc.iceConnectionState === "failed") {
+      const ice = this.pc.iceConnectionState;
+      console.log(`[WebRTC] ice state = ${ice} for ${this.targetId?.slice(0, 8) || "unknown"}`);
+
+      // CHANGE 6 – ICE restart logic (sender only, when onIceRestart is set)
+      if (this.onIceRestart) {
+        if (ice === "disconnected") {
+          this._scheduleIceRestart(3000);
+        } else if (ice === "failed") {
+          this._scheduleIceRestart(0);
+        } else if (ice === "connected" || ice === "completed") {
+          this._cancelIceRestart();
+        }
+      }
+
+      if (ice === "disconnected" || ice === "failed") {
         this.onConnectionStateChange?.("disconnected");
       }
     };
 
     this.unsubscribe = this.signaling.on(async (msg: SignalingMessage) => {
       try {
-        if (msg.targetId && msg.targetId !== this.signaling.clientId) {
-          return;
-        }
-        
-        // We only process targeted messages or specific negotiation messages from our target
-        if (this.targetId && msg.clientId && msg.clientId !== this.targetId) {
-          return;
-        }
+        if (msg.targetId && msg.targetId !== this.signaling.clientId) return;
+        if (this.targetId && msg.clientId && msg.clientId !== this.targetId) return;
 
         switch (msg.type) {
           case "offer":
@@ -102,80 +476,70 @@ export class WebRTCPeerConnection {
     });
   }
 
+  // ─── Track management ───────────────────────────────────────────────────────
+
   addTrack(track: MediaStreamTrack, stream: MediaStream) {
-    // Check if track is already added to prevent InvalidAccessError
-    if (this.pc.getSenders().some(s => s.track === track)) {
+    // Check if track is already added
+    if (this.pc.getSenders().some((s) => s.track === track)) {
       console.debug("[WebRTC] Track already added to peer connection, skipping");
       return;
     }
 
-    const sender = this.pc.addTrack(track, stream);
-    
-    if (track.kind === 'video') {
-      const isScreen = track.label.toLowerCase().includes('screen') || 
-                       track.label.toLowerCase().includes('monitor') ||
-                       track.label.toLowerCase().includes('window');
-      
-      try {
-        if ('contentHint' in track) {
-          (track as any).contentHint = isScreen ? 'detail' : 'motion';
-        }
-      } catch (e) {}
-
-      const parameters = sender.getParameters();
-      if (!parameters.encodings) {
-        parameters.encodings = [{}];
-      }
-      
+    // CHANGE 3 – set codec preferences before adding track (via transceiver)
+    if (track.kind === "video") {
       const settings = track.getSettings();
-      const capturedHeight = settings.height || 1080;
-      
-      const is4K = capturedHeight >= 2160;
-      const maxBitrate = isScreen ? 5_000_000 : (is4K ? 15_000_000 : 5_000_000);
-      parameters.encodings[0].maxBitrate = maxBitrate;
-      
-      // Only scale down if it exceeds 4K
-      parameters.encodings[0].scaleResolutionDownBy = Math.max(1, capturedHeight / 2160);
-      parameters.encodings[0].maxFramerate = is4K ? 30 : 60;
-      
-      sender.setParameters(parameters).catch(e => {
-        console.warn("[WebRTC] Failed to set max bitrate/framerate", e);
-      });
+      const height = settings.height || 480;
+      const transceiver = this.pc.addTransceiver(track, { direction: "sendonly", streams: [stream] });
+      applyCodecPreferences(transceiver, "video", height);
+    } else {
+      this.pc.addTrack(track, stream);
     }
   }
 
-  controlChannel?: RTCDataChannel;
+  // ─── Data channel ───────────────────────────────────────────────────────────
 
   createDataChannel(label: string, options?: RTCDataChannelInit) {
     const dc = this.pc.createDataChannel(label, options);
-    if (label === 'control') {
+    if (label === "control") {
       this.controlChannel = dc;
     }
     return dc;
   }
 
-  tuneOpus(sdp: string) {
-    if (!sdp.includes("stereo=1")) {
-      sdp = sdp.replace(
-        /(a=fmtp:\d+ .*useinbandfec=1)/g,
-        "$1;stereo=1;sprop-stereo=1;maxaveragebitrate=510000"
-      );
-    }
-    return sdp;
+  // ─── SDP helpers ────────────────────────────────────────────────────────────
+
+  /** @deprecated Use tuneSdp() instead. Kept for safety. */
+  tuneOpus(sdp: string): string {
+    return tuneSdp(sdp);
   }
 
-  async createOffer() {
+  private _getVideoKbps(): number {
+    for (const sender of this.pc.getSenders()) {
+      const track = sender.track;
+      if (track?.kind === "video") {
+        const h = track.getSettings().height || 480;
+        const raw = videoMaxBitrate(h);
+        const factor = multiReceiverFactor(this.receiverCount);
+        return Math.round(Math.max(MULTI_RECEIVER_FLOOR_BPS, raw * factor) / 1000);
+      }
+    }
+    return 4000;
+  }
+
+  // ─── Offer / Answer ─────────────────────────────────────────────────────────
+
+  async createOffer(opts?: RTCOfferOptions) {
     if (this.pc.signalingState === "closed") {
       console.warn(`[WebRTC] createOffer aborted, PC is closed for ${this.targetId}`);
       return;
     }
-    
+
     const now = Date.now();
     if (this.consecutiveFailures >= 3 && now - this.lastNegotiationTime < 10000) {
       console.warn(`[WebRTC] Circuit breaker active for ${this.targetId}, ignoring negotiation`);
       return;
     }
-    if (now - this.lastNegotiationTime < 1000) {
+    if (!opts?.iceRestart && now - this.lastNegotiationTime < 1000) {
       console.warn(`[WebRTC] Rate limiting negotiation for ${this.targetId}`);
       return;
     }
@@ -183,19 +547,42 @@ export class WebRTCPeerConnection {
 
     try {
       this.sessionId = crypto.randomUUID();
-      console.log(`[WebRTC] negotiation start receiver=${this.targetId?.slice(0, 8) || 'unknown'} session=${this.sessionId?.slice(0, 8)} state=${this.pc.signalingState}`);
-      let offer = await this.pc.createOffer();
-      offer.sdp = this.tuneOpus(offer.sdp || "");
+      console.log(
+        `[WebRTC] negotiation start receiver=${this.targetId?.slice(0, 8) || "unknown"} session=${this.sessionId?.slice(0, 8)} state=${this.pc.signalingState}`
+      );
+
+      // CHANGE 3 – apply codec preferences to all video transceivers
+      this.pc.getTransceivers().forEach((t) => {
+        if (t.sender.track?.kind === "video") {
+          const h = t.sender.track.getSettings().height || 480;
+          applyCodecPreferences(t, "video", h);
+        }
+      });
+
+      let offer = await this.pc.createOffer(opts || {});
+
+      // CHANGE 3 – tune SDP
+      const videoKbps = this._getVideoKbps();
+      offer = new RTCSessionDescription({
+        type: offer.type,
+        sdp: tuneSdp(offer.sdp || "", { videoMaxKbps: videoKbps }),
+      });
+
       console.log(`[WebRTC] offer created`);
       await this.pc.setLocalDescription(offer);
-      
-      const sent = this.signaling.send({ 
-        type: "offer", 
-        offer: offer, 
+
+      // CHANGE 5 – include mode in offer message
+      const sent = this.signaling.send({
+        type: "offer",
+        offer: { ...offer, mode: this.mode },
         targetId: this.targetId,
-        sessionId: this.sessionId
+        sessionId: this.sessionId,
       } as any);
-      console.log(`[WebRTC] offer ${sent ? 'sent' : 'queued'}`);
+      console.log(`[WebRTC] offer ${sent ? "sent" : "queued"}`);
+
+      // CHANGE 3 – apply encoding params after offer
+      await applyEncodingParams(this.pc, this.mode, this.receiverCount);
+
       this.consecutiveFailures = 0;
     } catch (e: any) {
       this.consecutiveFailures++;
@@ -206,11 +593,11 @@ export class WebRTCPeerConnection {
   async resendOffer() {
     if (this.pc.signalingState === "closed") return;
     if (this.pc.localDescription && this.sessionId) {
-      this.signaling.send({ 
-        type: "offer", 
-        offer: this.pc.localDescription, 
+      this.signaling.send({
+        type: "offer",
+        offer: { ...this.pc.localDescription, mode: this.mode },
         targetId: this.targetId,
-        sessionId: this.sessionId
+        sessionId: this.sessionId,
       } as any);
       console.log(`[WebRTC] offer resent to ${this.targetId?.slice(0, 8)}`);
     } else {
@@ -218,23 +605,43 @@ export class WebRTCPeerConnection {
     }
   }
 
-  private async handleOffer(offer: RTCSessionDescriptionInit) {
-    await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
+  // ─── Internal handlers ──────────────────────────────────────────────────────
+
+  private async handleOffer(offer: RTCSessionDescriptionInit & { mode?: string }) {
+    // CHANGE 5 – read mode from offer
+    if (offer.mode === "local-media" || offer.mode === "screen") {
+      this.mode = offer.mode;
+    }
+
+    // CHANGE 3 – tune incoming SDP before setRemoteDescription
+    const videoKbps = this._getVideoKbps();
+    const tunedSdp = tuneSdp(offer.sdp || "", { videoMaxKbps: videoKbps });
+    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: offer.type, sdp: tunedSdp }));
     await this.flushCandidates();
+
     const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
-    this.signaling.send({ 
-      type: "answer", 
-      answer: answer, 
+    const tunedAnswer = tuneSdp(answer.sdp || "");
+    const finalAnswer = new RTCSessionDescription({ type: answer.type, sdp: tunedAnswer });
+    await this.pc.setLocalDescription(finalAnswer);
+
+    this.signaling.send({
+      type: "answer",
+      answer: finalAnswer,
       targetId: this.targetId,
-      sessionId: this.sessionId
+      sessionId: this.sessionId,
     } as any);
   }
 
   private async handleAnswer(answer: RTCSessionDescriptionInit) {
-    console.log(`[WebRTC] answer received from ${this.targetId?.slice(0, 8) || 'unknown'}`);
-    await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+    console.log(`[WebRTC] answer received from ${this.targetId?.slice(0, 8) || "unknown"}`);
+    // CHANGE 3 – tune incoming answer SDP
+    const videoKbps = this._getVideoKbps();
+    const tunedSdp = tuneSdp(answer.sdp || "", { videoMaxKbps: videoKbps });
+    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: answer.type, sdp: tunedSdp }));
     await this.flushCandidates();
+
+    // CHANGE 3 – re-apply encoding after renegotiation
+    await applyEncodingParams(this.pc, this.mode, this.receiverCount);
   }
 
   private async handleIceCandidate(candidate: RTCIceCandidateInit) {
@@ -258,12 +665,71 @@ export class WebRTCPeerConnection {
     }
   }
 
+  // ─── CHANGE 2 – log path ────────────────────────────────────────────────────
+  private async _logCandidatePath() {
+    try {
+      const reports = await this.pc.getStats();
+      reports.forEach((r: any) => {
+        if (r.type === "candidate-pair" && r.state === "succeeded" && r.nominated) {
+          const local = (reports as any).get(r.localCandidateId);
+          const pathType = local?.candidateType || "unknown";
+          console.log(`[WebRTC] path = ${pathType} for ${this.targetId?.slice(0, 8) || "unknown"}`);
+        }
+      });
+    } catch {}
+  }
+
+  // ─── CHANGE 6 – ICE restart ─────────────────────────────────────────────────
+  private _scheduleIceRestart(delayMs: number) {
+    if (!this.onIceRestart) return;
+    this._cancelIceRestart();
+    if (this.iceRestartAttempts >= ICE_RESTART_BACKOFFS.length) {
+      console.warn(`[WebRTC] Max ICE restart attempts reached for ${this.targetId?.slice(0, 8)}`);
+      return;
+    }
+    const backoff = ICE_RESTART_BACKOFFS[this.iceRestartAttempts];
+    const wait = Math.max(delayMs, backoff);
+    console.log(`[WebRTC] ice restart #${this.iceRestartAttempts + 1} scheduled in ${wait}ms for ${this.targetId?.slice(0, 8)}`);
+    this.iceRestartTimer = setTimeout(async () => {
+      if (this.stopped) return;
+      this.iceRestartAttempts++;
+      console.log(`[WebRTC] ice restart #${this.iceRestartAttempts} for ${this.targetId?.slice(0, 8)}`);
+      try {
+        await this.onIceRestart!();
+      } catch (e) {
+        console.warn("[WebRTC] ICE restart callback failed:", e);
+      }
+    }, wait);
+  }
+
+  private _cancelIceRestart() {
+    if (this.iceRestartTimer) {
+      clearTimeout(this.iceRestartTimer);
+      this.iceRestartTimer = undefined;
+    }
+    this.iceRestartAttempts = 0;
+  }
+
+  // ─── CHANGE 7 – sender stats ─────────────────────────────────────────────────
+  startSenderStats() {
+    this.statsInterval = startSenderStatsLoop(this.pc, this.targetId || "unknown", () => this.stopped);
+  }
+
+  // ─── Lifecycle ───────────────────────────────────────────────────────────────
+
   close() {
+    this.stopped = true;
+    this._cancelIceRestart();
+    if (this.statsInterval) {
+      clearInterval(this.statsInterval);
+      this.statsInterval = null;
+    }
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = undefined;
     }
-    
     this.pc.close();
   }
 }
+
+

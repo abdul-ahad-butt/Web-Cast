@@ -1,7 +1,8 @@
 import { Tv, MonitorSmartphone, Settings } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { SignalingClient, getGlobalSignaling } from "../webrtc/SignalingClient";
-import { WebRTCPeerConnection } from "../webrtc/WebRTCPeerConnection";
+import { WebRTCPeerConnection, applyEncodingParams } from "../webrtc/WebRTCPeerConnection";
+import { getIceServers, makePcConfig } from "../webrtc/iceServers";
 
 export default function Dashboard() {
   const [roomId, setRoomId] = useState<string>("");
@@ -21,9 +22,48 @@ export default function Dashboard() {
   const knownReceiversRef = useRef<Set<string>>(new Set());
   const unsubsRef = useRef<(() => void)[]>([]);
 
+  // CHANGE 4 – wakeLock ref
+  const wakeLockRef = useRef<any>(null);
+  // CHANGE 2 – cached RTCConfiguration
+  const pcConfigRef = useRef<RTCConfiguration | null>(null);
+
+  // Acquire/re-acquire wakeLock
+  const acquireWakeLock = useCallback(async () => {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+        console.log('[Sender] wakeLock acquired');
+      } else {
+        console.log('[Sender] wakeLock API not supported, skipping');
+      }
+    } catch (e: any) {
+      console.warn('[Sender] wakeLock failed:', e?.message);
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(async () => {
+    try {
+      if (wakeLockRef.current) {
+        await wakeLockRef.current.release();
+        wakeLockRef.current = null;
+        console.log('[Sender] wakeLock released');
+      }
+    } catch {}
+  }, []);
+
   useEffect(() => {
-    console.log("[App] role=sender build=2026-09-20-round3");
+    console.log("[App] role=sender build=2026-09-24-quality-r1");
+
+    // CHANGE 4 – re-acquire wakeLock on visibility change
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && activeStreamRef.current) {
+        acquireWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
       // Cleanup on unmount
       unsubsRef.current.forEach(unsub => unsub());
       pcMapRef.current.forEach(pc => pc.close());
@@ -34,7 +74,20 @@ export default function Dashboard() {
       if (activeStreamRef.current) {
         activeStreamRef.current.getTracks().forEach(t => t.stop());
       }
+      releaseWakeLock();
     };
+  }, [acquireWakeLock, releaseWakeLock]);
+
+  // CHANGE 2 – determine cast mode from current stream
+  const currentModeRef = useRef<"local-media" | "screen">("screen");
+
+  // Re-apply bitrate to all PCs when receiver count changes
+  const reapplyBitrate = useCallback(async () => {
+    const count = pcMapRef.current.size;
+    for (const pc of pcMapRef.current.values()) {
+      pc.receiverCount = count;
+      await applyEncodingParams(pc.pc, pc.mode, count);
+    }
   }, []);
 
   const startNegotiation = useCallback(async (receiverId: string, reqSessionId?: string) => {
@@ -76,7 +129,24 @@ export default function Dashboard() {
     if (!activeStreamRef.current || !signalingRef.current) return;
     
     if (!pc) {
-      pc = new WebRTCPeerConnection(signalingRef.current, receiverId);
+      // CHANGE 2 – fetch TURN servers once, then pass config to PC
+      if (!pcConfigRef.current) {
+        const iceServers = await getIceServers();
+        pcConfigRef.current = makePcConfig(iceServers);
+      }
+
+      pc = new WebRTCPeerConnection(signalingRef.current, receiverId, undefined, pcConfigRef.current);
+      // CHANGE 3/5 – set mode on PC
+      pc.mode = currentModeRef.current;
+      pc.receiverCount = pcMapRef.current.size + 1;
+
+      // CHANGE 6 – wire ICE restart: only touches THIS receiver's PC
+      pc.onIceRestart = async () => {
+        const thisPc = pcMapRef.current.get(receiverId);
+        if (!thisPc || thisPc.pc.signalingState === 'closed') return;
+        await thisPc.createOffer({ iceRestart: true });
+      };
+
       let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
       pc.onConnectionStateChange = (state) => {
          let count = 0;
@@ -117,11 +187,20 @@ export default function Dashboard() {
         } catch (err) {}
       };
       pcMapRef.current.set(receiverId, pc);
+
+      // CHANGE 7 – start stats loop for this sender
+      pc.startSenderStats();
+
+      // Re-apply bitrate scaling now that receiver count may have changed
+      const totalCount = pcMapRef.current.size;
+      for (const p of pcMapRef.current.values()) {
+        p.receiverCount = totalCount;
+      }
     }
 
     lastNegotiation.current.set(receiverId, Date.now());
     
-    // Safety clear tracks if changing source
+    // CHANGE 4 – use the SAME tracks for every PC; addTrack is deduplicated in WebRTCPeerConnection
     const senders = pc.pc.getSenders();
     activeStreamRef.current.getTracks().forEach(track => {
       if (!senders.find(s => s.track === track)) {
@@ -130,7 +209,7 @@ export default function Dashboard() {
     });
     
     await pc.createOffer();
-  }, []);
+  }, [reapplyBitrate]);
 
   const setupSignaling = (rId: string, tok: string) => {
     if (signalingRef.current) {
@@ -275,18 +354,19 @@ export default function Dashboard() {
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 30 } },
+        video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 60 } },
         audio: true
       });
       // Check if actual stream returned is larger than 1080p, and apply constraints if needed
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
-        if ('contentHint' in videoTrack) (videoTrack as any).contentHint = 'detail';
+        // CHANGE 3 – use SCREEN_CONTENT_HINT for screen capture
+        if ('contentHint' in videoTrack) (videoTrack as any).contentHint = 'motion';
         const settings = videoTrack.getSettings();
         if ((settings.height && settings.height > 1080) || (settings.width && settings.width > 1920)) {
           console.log(`[Sender] Downscaling screen capture from ${settings.width}x${settings.height} to 1080p limit`);
           try {
-            await videoTrack.applyConstraints({ width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 30 } });
+            await videoTrack.applyConstraints({ width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 60 } });
           } catch (e) {
             console.warn("[Sender] applyConstraints failed, proceeding anyway", e);
           }
@@ -315,11 +395,19 @@ export default function Dashboard() {
       pcMapRef.current.clear();
       lastNegotiation.current.clear();
       receiverSessionMapRef.current.clear();
+      // CHANGE 2 – invalidate PC config cache so next session re-fetches
+      pcConfigRef.current = null;
+
+      // CHANGE 5 – set mode for this cast session
+      currentModeRef.current = "screen";
       
       activeStreamRef.current = stream;
       setStatus("Casting screen...");
       setMediaInfo({ filename: "Screen Capture", resolution: "1080p" }); 
       setIsConnected(true);
+
+      // CHANGE 4 – acquire wakeLock for screen cast
+      await acquireWakeLock();
       
       console.log("[Sender] Triggering negotiation for known receivers");
       knownReceiversRef.current.forEach(recId => {
@@ -355,6 +443,8 @@ export default function Dashboard() {
       setStatus(`Loading ${file.name}...`);
       
       if (!videoRef.current) return;
+      // CHANGE 4 – use createObjectURL (not FileReader), set preload=auto
+      videoRef.current.preload = "auto";
       const url = URL.createObjectURL(file);
       videoRef.current.src = url;
       
@@ -392,6 +482,7 @@ export default function Dashboard() {
       }
 
       console.log("[Sender] Getting captureStream");
+      // CHANGE 4 – ONE captureStream per source; reuse it for all receivers
       const stream: MediaStream = captureStream.call(videoRef.current);
       console.log("[Sender] Stream tracks:", stream.getTracks().length);
       if (stream.getVideoTracks().length === 0) {
@@ -412,7 +503,13 @@ export default function Dashboard() {
       pcMapRef.current.forEach(pc => pc.close());
       pcMapRef.current.clear();
       lastNegotiation.current.clear();
+      // CHANGE 2 – invalidate PC config cache
+      pcConfigRef.current = null;
 
+      // CHANGE 5 – set mode for this cast session
+      currentModeRef.current = "local-media";
+
+      // CHANGE 3 – content hint for local media
       stream.getVideoTracks().forEach(track => {
         if ('contentHint' in track) (track as any).contentHint = 'motion';
       });
@@ -420,6 +517,9 @@ export default function Dashboard() {
       activeStreamRef.current = stream;
       setStatus(`Casting Local Media`);
       setIsConnected(true);
+
+      // CHANGE 4 – acquire wakeLock for local media cast
+      await acquireWakeLock();
 
       console.log("[Sender] Triggering negotiation for known receivers");
       knownReceiversRef.current.forEach(recId => {
@@ -438,6 +538,7 @@ export default function Dashboard() {
     pcMapRef.current.clear();
     lastNegotiation.current.clear();
     receiverSessionMapRef.current.clear();
+    pcConfigRef.current = null;
     
     if (activeStreamRef.current) {
       activeStreamRef.current.getTracks().forEach(track => track.stop());
@@ -449,6 +550,9 @@ export default function Dashboard() {
       if (videoRef.current.src) URL.revokeObjectURL(videoRef.current.src);
       videoRef.current.src = "";
     }
+
+    // CHANGE 4 – release wakeLock on stop
+    releaseWakeLock();
     
     setIsConnected(false);
     setStatus("Not Connected");
@@ -491,7 +595,8 @@ export default function Dashboard() {
 
       <input type="file" ref={fileInputRef} className="hidden" accept="video/*,image/*" onChange={handleFileChange} />
       {/* Must be played inline to capture stream properly. Cannot be display:none, so we visually hide it instead. */}
-      <video ref={videoRef} className="fixed top-[-9999px] left-[-9999px] opacity-0 pointer-events-none" controls muted playsInline loop />
+      {/* CHANGE 4: off-screen but in DOM; position:fixed keeps it rendered. preload added in JS */}
+      <video ref={videoRef} className="fixed top-[-9999px] left-[-9999px] opacity-0 pointer-events-none" controls muted playsInline loop preload="auto" />
 
       <main className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
         <div onClick={handleCastChromeTab} className="glass-card p-8 rounded-2xl flex flex-col items-start hover:border-blue-500/50 hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all cursor-pointer group">

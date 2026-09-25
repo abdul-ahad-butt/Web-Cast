@@ -1,6 +1,9 @@
 export interface Env {
   CAST_ROOM: DurableObjectNamespace;
   LOCAL_MEDIA_BUCKET: R2Bucket;
+  // CHANGE 2 – TURN secret bindings (set via: wrangler secret put TURN_KEY_ID etc.)
+  TURN_KEY_ID?: string;
+  TURN_KEY_API_TOKEN?: string;
 }
 
 export { CastRoomDurableObject } from "./durable-object";
@@ -21,6 +24,50 @@ export default {
     }
 
     try {
+      // CHANGE 2 – Route: GET /api/turn – return TURN credentials
+      if (url.pathname === "/api/turn" && request.method === "GET") {
+        const STUN_FALLBACK = JSON.stringify([{ urls: "stun:stun.cloudflare.com:3478" }]);
+
+        if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) {
+          console.warn("[Worker] TURN_KEY_ID or TURN_KEY_API_TOKEN not set, returning STUN fallback");
+          return new Response(STUN_FALLBACK, {
+            headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+          });
+        }
+
+        try {
+          const cfRes = await fetch(
+            `https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ ttl: 86400 }),
+            }
+          );
+
+          if (!cfRes.ok) throw new Error(`Cloudflare TURN API returned ${cfRes.status}`);
+
+          const data = await cfRes.json() as { iceServers?: RTCIceServer[] };
+          // Filter out port-53 URLs (browsers block them)
+          const filtered = (data.iceServers || []).map((server: any) => {
+            const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+            return { ...server, urls: urls.filter((u: string) => !/:53(\D|$)/.test(u)) };
+          }).filter((s: any) => s.urls.length > 0);
+
+          return new Response(JSON.stringify(filtered), {
+            headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+          });
+        } catch (turnErr: any) {
+          console.warn("[Worker] TURN credential fetch failed:", turnErr?.message);
+          return new Response(STUN_FALLBACK, {
+            headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+          });
+        }
+      }
+
       // Route: /api/rooms - Create a new room
       if (url.pathname === "/api/rooms" && request.method === "POST") {
         // Generate a simple short room ID (excluding 0, O, 1, I, L)
@@ -199,7 +246,7 @@ export default {
       }
 
       if (url.pathname === "/api/version" && request.method === "GET") {
-        return new Response(JSON.stringify({ version: "2026-09-20-round3" }), {
+        return new Response(JSON.stringify({ version: "2026-09-24-quality-r1" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
