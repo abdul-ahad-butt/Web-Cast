@@ -5,11 +5,8 @@ import { WebRTCPeerConnection, applyEncodingParams } from "../webrtc/WebRTCPeerC
 import { getIceServers, makePcConfig } from "../webrtc/iceServers";
 
 // ─── R2 Upload helpers ────────────────────────────────────────────────────────
-// Accepted local media MIME types
-const ACCEPTED_MIME = [
-  "video/mp4", "video/webm", "video/quicktime", "video/x-matroska",
-  "image/jpeg", "image/png", "image/webp", "image/gif",
-];
+// ─── R2 Upload helpers ────────────────────────────────────────────────────────
+
 
 function getApiBase(): string {
   const env = (import.meta as any).env;
@@ -93,7 +90,6 @@ export default function Dashboard() {
   const [status, setStatus] = useState<string>("Not Connected");
   const [mediaInfo, setMediaInfo] = useState<{filename: string, resolution: string, transport: "r2" | "webrtc"} | null>(null);
   const [receiverCount, setReceiverCount] = useState<number>(0);
-  const [connectedCount, setConnectedCount] = useState<number>(0);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 

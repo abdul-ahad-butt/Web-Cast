@@ -377,7 +377,6 @@ export default function Receiver() {
     let isSenderPresent = false;
     let retryCount = 0;
     let offerTimeout: ReturnType<typeof setTimeout> | null = null;
-    let castMode: "local-media" | "screen" = "screen";
 
     const stopOfferLoop = () => {
       if (offerTimeout) clearTimeout(offerTimeout);
