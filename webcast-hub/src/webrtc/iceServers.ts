@@ -73,6 +73,6 @@ export function makePcConfig(iceServers: RTCIceServer[]): RTCConfiguration {
     iceServers,
     bundlePolicy: "max-bundle",
     rtcpMuxPolicy: "require",
-    iceCandidatePoolSize: 2,
+    iceCandidatePoolSize: 4,
   };
 }

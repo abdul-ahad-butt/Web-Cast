@@ -11,7 +11,7 @@ import {
 
 // CHANGE 8 – build tag
 // Logged in Dashboard.tsx and Receiver.tsx; updated here for reference.
-export const BUILD_TAG = "2026-09-24-quality-r2";
+export const BUILD_TAG = "2026-09-24-quality-r3";
 
 // ─── SDP helper (CHANGE 3) ────────────────────────────────────────────────────
 /**

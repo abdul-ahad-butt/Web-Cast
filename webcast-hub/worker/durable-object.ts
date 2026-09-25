@@ -186,6 +186,22 @@ export class CastRoomDurableObject {
       } else if (msg.type === "ice-candidate") {
         const targetRole = session.type === "sender" ? "receiver" : "sender";
         this.broadcastToRole(targetRole, JSON.stringify(msg));
+      // r3: R2 media session — sender broadcasts to all receivers
+      } else if (msg.type === "media-session") {
+        if (session.type === "sender") this.broadcastToRole("receiver", JSON.stringify(msg));
+      // r3: playback-control — sender → all receivers, or receiver → sender
+      } else if (msg.type === "playback-control") {
+        if (session.type === "sender") {
+          this.broadcastToRole("receiver", JSON.stringify(msg));
+        } else {
+          this.broadcastToRole("sender", JSON.stringify(msg));
+        }
+      // r3: playback-state — receiver → sender
+      } else if (msg.type === "playback-state") {
+        if (session.type === "receiver") this.broadcastToRole("sender", JSON.stringify(msg));
+      // r3: decode-capability — receiver → sender
+      } else if (msg.type === "decode-capability") {
+        if (session.type === "receiver") this.broadcastToRole("sender", JSON.stringify(msg));
       } else {
         // General messages
         this.broadcast(JSON.stringify(msg), ws);

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "generatedAt": "2026-09-25T11:16:18.267Z",
+  "proposalsGeneratedAt": "2026-09-25T11:16:14.818Z",
+  "source": "session-apply",
+  "activeSkills": [
+    "self-learning",
+    "file-style-conventions",
+    "skill-creator",
+    "skill-usage-insights",
+    "skill-feedback-adaptation",
+    "skill-official-updater",
+    "github-actions-ci",
+    "vscode-extension-publishing"
+  ],
+  "ignoredSkills": []
+}

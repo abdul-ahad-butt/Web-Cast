@@ -1,5 +1,8 @@
 export type ClientType = "sender" | "receiver";
 
+export type PlaybackControlAction = "play" | "pause" | "seek" | "restart" | "volume" | "mute" | "stop";
+export type PlaybackControlSource = "sender" | "receiver" | "system";
+
 export type SignalingMessage = { clientId?: string; targetId?: string; sessionId?: string } & (
   | { type: "media-url"; url: string; filename?: string; resolution?: string }
   | { type: "media-play" }
@@ -18,6 +21,48 @@ export type SignalingMessage = { clientId?: string; targetId?: string; sessionId
   | { type: "ping" }
   | { type: "pong" }
   | { type: "cast-stopped" }
+  // r3: R2 media session delivery (sender → receivers)
+  | {
+      type: "media-session";
+      mediaUrl: string;           // /api/media/:mediaId — served by Worker with Range support
+      filename: string;
+      contentType: string;
+      size: number;               // bytes
+      duration?: number;          // seconds, if known at upload time
+      sourceWidth?: number;
+      sourceHeight?: number;
+      mediaSessionId: string;     // unique per cast session
+    }
+  // r3: bidirectional playback control (sender ↔ receiver, via signaling)
+  | {
+      type: "playback-control";
+      action: PlaybackControlAction;
+      commandId: string;          // uuid for dedup/ack
+      source: PlaybackControlSource;
+      currentTime?: number;       // for seek/play
+      volume?: number;            // for volume
+      muted?: boolean;            // for mute
+      sentAt: number;             // performance.now() or Date.now()
+    }
+  // r3: receiver reporting actual playback state back to sender
+  | {
+      type: "playback-state";
+      commandId?: string;         // echoes the command this is ACKing
+      paused: boolean;
+      currentTime: number;
+      duration: number;
+      volume: number;
+      muted: boolean;
+      bufferedAhead: number;      // seconds ahead buffered
+      readyState: number;         // HTMLMediaElement.readyState
+      appliedAt: number;          // Date.now()
+    }
+  // r3: receiver reporting decode capability
+  | {
+      type: "decode-capability";
+      canPlayType: string;        // "probably" | "maybe" | ""
+      contentType: string;
+    }
 );
 
 interface QueuedMessage {
