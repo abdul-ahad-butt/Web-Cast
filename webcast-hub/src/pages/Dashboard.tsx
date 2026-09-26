@@ -109,6 +109,8 @@ export default function Dashboard() {
   const currentModeRef = useRef<"local-media" | "screen">("screen");
   // r3: current media session id (for R2 local media)
   const mediaSessionIdRef = useRef<string | null>(null);
+  // r4-stability: monotonic media version — incremented for each new file, stable across reconnects
+  const mediaVersionRef = useRef<number>(0);
   // r3: last playback-state snapshot from receivers (keyed by receiverId)
   const receiverPlaybackStateRef = useRef<Map<string, any>>(new Map());
 
@@ -134,7 +136,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    console.log("[App] role=sender build=2026-09-24-quality-r3");
+    console.log("[App] role=sender build=2026-09-25-stability-r4");
     const onVisibility = () => {
       if (document.visibilityState === 'visible' && activeStreamRef.current) acquireWakeLock();
     };
@@ -268,7 +270,9 @@ export default function Dashboard() {
     await pc.createOffer();
   }, [reapplyBitrate]);
 
-  // r3: broadcast current R2 media session to all receivers
+  // r4-stability: broadcast current R2 media session to all receivers.
+  // CRITICAL: the mediaSessionId is stable across socket reconnects — a reconnect must NOT
+  // produce a new session. The receiver uses mediaSessionId+mediaUrl to detect duplicates.
   const _broadcastMediaSession = useCallback(() => {
     if (!signalingRef.current || !mediaSessionIdRef.current) return;
     const session = (window as any).__wcMediaSession;
@@ -284,6 +288,8 @@ export default function Dashboard() {
       sourceWidth: session.sourceWidth,
       sourceHeight: session.sourceHeight,
       mediaSessionId: mediaSessionIdRef.current,
+      // r4-stability: monotonic version lets receiver reject stale/duplicate messages
+      mediaVersion: mediaVersionRef.current,
     } as any);
   }, []);
 
@@ -305,12 +311,17 @@ export default function Dashboard() {
           const currentReceivers = new Set<string>((msg as any).receivers);
           currentReceivers.forEach(id => {
             if (!knownReceiversRef.current.has(id)) {
+              // Genuinely new receiver we haven't seen — register and send session
               knownReceiversRef.current.add(id);
               if (activeStreamRef.current) startNegotiation(id);
-              // r3: if local media session active, send it
+              // r4: only broadcast media-session to receivers we've never seen before
               if (mediaSessionIdRef.current) {
+                console.log(`[MEDIA] room-state: new receiver ${id.slice(0,8)} — sending media-session v${mediaVersionRef.current}`);
                 setTimeout(() => _broadcastMediaSession(), 500);
               }
+            } else {
+              // Already-known receiver (e.g. reconnecting same socket) — DO NOT re-broadcast
+              console.log(`[MEDIA] room-state: receiver ${id.slice(0,8)} already known — skipping media-session broadcast`);
             }
           });
         }
@@ -343,8 +354,16 @@ export default function Dashboard() {
         if (activeStreamRef.current) {
           startNegotiation(msg.receiverId!, msg.sessionId);
         } else if (mediaSessionIdRef.current) {
-          // r3: receiver requesting an offer but we are in R2 mode — send media-session instead
-          setTimeout(() => _broadcastMediaSession(), 200);
+          // r4-stability: receiver may already have this session (reconnect path).
+          // If the receiver sends its known mediaSessionId in the request-offer, check it.
+          const receiverKnownSession = (msg as any).currentMediaSessionId;
+          if (receiverKnownSession && receiverKnownSession === mediaSessionIdRef.current) {
+            console.log(`[MEDIA] request-offer from receiver ${msg.receiverId?.slice(0,8)} — already has session ${mediaSessionIdRef.current.slice(0,8)} — skipping re-broadcast`);
+          } else {
+            // Receiver is new or doesn't have the session — send it
+            console.log(`[MEDIA] request-offer from receiver ${msg.receiverId?.slice(0,8)} — sending media-session v${mediaVersionRef.current}`);
+            setTimeout(() => _broadcastMediaSession(), 200);
+          }
         }
       } else if (msg.type as any === "delivery-failed") {
         const failedMsg = msg as any;
@@ -585,7 +604,12 @@ export default function Dashboard() {
     pcMapRef.current.clear();
     lastNegotiation.current.clear();
     pcConfigRef.current = null;
+    // r4-stability: generate new stable sessionId for this file.
+    // This ID is stable for the ENTIRE duration of this file's cast — it must NOT change
+    // when the signaling socket reconnects. Only a new file selection creates a new session.
     mediaSessionIdRef.current = crypto.randomUUID();
+    mediaVersionRef.current++;  // monotonically increment for each new file
+    console.log(`[MEDIA] New media session: id=${mediaSessionIdRef.current.slice(0,8)} version=${mediaVersionRef.current} file=${file.name}`);
     currentModeRef.current = "local-media";
 
     setIsUploading(true);
@@ -700,6 +724,9 @@ export default function Dashboard() {
           <div className="absolute -inset-0.5 bg-linear-to-r from-blue-500 to-indigo-500 rounded-lg blur opacity-30 group-hover:opacity-60 transition duration-500 pointer-events-none"></div>
           <input
             type="text"
+            id="room-code-input"
+            name="roomCode"
+            aria-label="Room Code"
             placeholder="Enter Room Code"
             value={roomId}
             onChange={(e) => setRoomId(e.target.value.toUpperCase())}

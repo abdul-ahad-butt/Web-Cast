@@ -251,8 +251,8 @@ export default {
       }
 
       if (url.pathname === "/api/version" && request.method === "GET") {
-        return new Response(JSON.stringify({ version: "2026-09-24-quality-r3" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        return new Response(JSON.stringify({ version: "2026-09-25-stability-r4" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
         });
       }
 

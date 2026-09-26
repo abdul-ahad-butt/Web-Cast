@@ -6,7 +6,7 @@ export default {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
             "Access-Control-Allow-Headers": "Content-Type, Authorization, Range",
-            "Access-Control-Expose-Headers": "Accept-Ranges, Content-Range, Content-Length, Content-Type",
+            "Access-Control-Expose-Headers": "Accept-Ranges, Content-Range, Content-Length, Content-Type, ETag",
         };
         if (request.method === "OPTIONS") {
             return new Response(null, { headers: corsHeaders });
@@ -168,11 +168,16 @@ export default {
                 object.writeHttpMetadata(headers);
                 headers.set("etag", object.httpEtag);
                 headers.set("Accept-Ranges", "bytes");
+                // r3-fix: Cache-Control allows TV browsers to cache chunks efficiently.
+                // Private ensures CDN doesn't cache across users (R2 objects are per-session).
+                headers.set("Cache-Control", "private, max-age=3600");
+                // Vary: Range ensures proper caching of partial vs full content
+                headers.set("Vary", "Range");
                 // R2 uses `object.range` if a partial request was made and fulfilled
                 const obj = object;
                 if (obj.range && 'offset' in obj.range && obj.range.offset !== undefined) {
                     const offset = obj.range.offset;
-                    const length = obj.range.length || obj.size - offset; // fallback if length isn't provided
+                    const length = obj.range.length ?? (obj.size - offset);
                     headers.set("Content-Range", `bytes ${offset}-${offset + length - 1}/${obj.size}`);
                     headers.set("Content-Length", `${length}`);
                     return new Response(obj.body, { status: 206, headers });
@@ -201,8 +206,8 @@ export default {
                 return stub.fetch(request);
             }
             if (url.pathname === "/api/version" && request.method === "GET") {
-                return new Response(JSON.stringify({ version: "2026-09-24-quality-r1" }), {
-                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                return new Response(JSON.stringify({ version: "2026-09-25-stability-r4" }), {
+                    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
                 });
             }
             if (url.pathname === "/" && request.method === "GET") {

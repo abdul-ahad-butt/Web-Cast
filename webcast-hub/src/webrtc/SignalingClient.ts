@@ -31,7 +31,8 @@ export type SignalingMessage = { clientId?: string; targetId?: string; sessionId
       duration?: number;          // seconds, if known at upload time
       sourceWidth?: number;
       sourceHeight?: number;
-      mediaSessionId: string;     // unique per cast session
+      mediaSessionId: string;     // unique per cast session, stable across socket reconnects
+      mediaVersion?: number;      // monotonic — incremented only when media actually changes
     }
   // r3: bidirectional playback control (sender ↔ receiver, via signaling)
   | {
@@ -325,6 +326,25 @@ export class SignalingClient {
       return true;
     } else {
       if (data.type !== "ping" && data.type !== "pong") {
+        // r4-stability: DO NOT queue session-specific messages.
+        // Replaying these after a socket reconnect causes the TV restart bug:
+        //   media-session → video.load() → currentTime resets to 0
+        //   request-offer → sender re-broadcasts media-session → same
+        //   offer/answer/ice-candidate → stale WebRTC negotiation
+        // These messages are only valid at the moment they are generated.
+        // Queuing them is DANGEROUS. Drop and warn instead.
+        const DO_NOT_QUEUE: SignalingMessage["type"][] = [
+          "media-session",
+          "request-offer",
+          "offer",
+          "answer",
+          "ice-candidate",
+          "decode-capability",
+        ];
+        if (DO_NOT_QUEUE.includes(data.type)) {
+          console.warn(`[Signaling] socket not open — DROPPING (not queuing) type=${data.type} reason=session-specific-must-not-replay`);
+          return false;
+        }
         const now = Date.now();
         this.sendQueue = this.sendQueue.filter(q => now - q.timestamp < 10000);
         if (this.sendQueue.length < 50) {

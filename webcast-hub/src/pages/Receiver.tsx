@@ -69,8 +69,15 @@ export default function Receiver() {
   const playPromiseRef = useRef<Promise<void> | null>(null);
   // r3: signaling ref for sending playback-state back
   const signalingRef = useRef<ReturnType<typeof getGlobalSignaling> | null>(null);
-  // r3: current media session id
+  // r3: current media session id AND active media URL (for idempotency)
   const mediaSessionIdRef = useRef<string | null>(null);
+  const activeMediaUrlRef = useRef<string | null>(null);
+  const activeMediaVersionRef = useRef<number>(-1);   // monotonic — only accept higher versions
+  const lastPlaybackSequenceRef = useRef<number>(-1); // reject stale playback-state
+  // r3: socket generation counter — media identity must be independent of socket identity
+  const socketGenerationRef = useRef<number>(0);
+  // r4: track whether video was playing before a buffering stall so canplay can resume correctly
+  const wasPlayingBeforeStallRef = useRef<boolean>(false);
   // r3: buffering diagnostics
   const waitingCountRef = useRef(0);
   const stallCountRef = useRef(0);
@@ -141,9 +148,9 @@ export default function Receiver() {
     } as any);
   }, []);
 
-  // ─── r3: Apply sender playback-control command ───────────────────────────────
+  // ─── r4: Apply sender playback-control command ───────────────────────────────
   const applyPlaybackControl = useCallback(async (ctrl: any) => {
-    // Dedup
+    // Dedup by commandId
     if (processedCommandsRef.current.has(ctrl.commandId)) return;
     processedCommandsRef.current.add(ctrl.commandId);
     // Trim set size
@@ -152,28 +159,49 @@ export default function Receiver() {
       processedCommandsRef.current = new Set(arr.slice(arr.length - 100));
     }
 
+    // Reject stale playback-state messages (out-of-order protection)
+    if (typeof ctrl.playbackSequence === "number") {
+      if (ctrl.playbackSequence <= lastPlaybackSequenceRef.current) {
+        console.warn(`[CONTROL] Ignoring stale message playbackSequence=${ctrl.playbackSequence} current=${lastPlaybackSequenceRef.current}`);
+        return;
+      }
+      lastPlaybackSequenceRef.current = ctrl.playbackSequence;
+    }
+
+    // Guard: only apply if mediaSessionId matches (prevent stale-session commands)
+    if (ctrl.mediaSessionId && ctrl.mediaSessionId !== mediaSessionIdRef.current) {
+      console.warn(`[CONTROL] Ignoring command for stale session ctrl.mediaSessionId=${ctrl.mediaSessionId?.slice(0,8)} active=${mediaSessionIdRef.current?.slice(0,8)}`);
+      return;
+    }
+
     const video = videoRef.current;
     if (!video) return;
 
     const latency = Date.now() - (ctrl.sentAt || Date.now());
-    console.log(`[CONTROL] action=${ctrl.action} commandId=${ctrl.commandId?.slice(0, 8)} latency=${latency}ms source=${ctrl.source}`);
+    console.log(`[CONTROL] action=${ctrl.action} commandId=${ctrl.commandId?.slice(0, 8)} latency=${latency}ms source=${ctrl.source} socketGeneration=${socketGenerationRef.current}`);
 
     switch (ctrl.action) {
       case "play":
         if (typeof ctrl.currentTime === "number" && Math.abs(video.currentTime - ctrl.currentTime) > 1) {
+          console.log(`[MEDIA-TRACE] action=seek reason=play-with-time mediaSessionId=${mediaSessionIdRef.current?.slice(0,8)} currentTimeBefore=${video.currentTime.toFixed(2)} currentTimeAfter=${ctrl.currentTime}`);
           video.currentTime = ctrl.currentTime;
         }
+        console.log(`[MEDIA-TRACE] action=play reason=sender-command mediaSessionId=${mediaSessionIdRef.current?.slice(0,8)} socketGeneration=${socketGenerationRef.current}`);
         await safePlay();
         break;
       case "pause":
+        console.log(`[MEDIA-TRACE] action=pause reason=sender-command mediaSessionId=${mediaSessionIdRef.current?.slice(0,8)}`);
         video.pause();
         break;
       case "seek":
         if (typeof ctrl.currentTime === "number") {
+          console.log(`[MEDIA-TRACE] action=seek reason=sender-command mediaSessionId=${mediaSessionIdRef.current?.slice(0,8)} currentTimeBefore=${video.currentTime.toFixed(2)} currentTimeAfter=${ctrl.currentTime}`);
           video.currentTime = ctrl.currentTime;
         }
         break;
       case "restart":
+        // Only restart is allowed to reset currentTime to 0 — explicit user action
+        console.log(`[MEDIA-TRACE] action=restart reason=explicit-sender-command mediaSessionId=${mediaSessionIdRef.current?.slice(0,8)} currentTimeBefore=${video.currentTime.toFixed(2)}`);
         video.currentTime = 0;
         await safePlay();
         break;
@@ -190,6 +218,7 @@ export default function Receiver() {
         }
         break;
       case "stop":
+        console.log(`[MEDIA-TRACE] action=stop reason=sender-command mediaSessionId=${mediaSessionIdRef.current?.slice(0,8)}`);
         video.pause();
         video.currentTime = 0;
         setHasMedia(false);
@@ -362,7 +391,7 @@ export default function Receiver() {
 
   // ─── Main signaling + WebRTC setup ───────────────────────────────────────────
   useEffect(() => {
-    console.log("[App] role=receiver build=2026-09-24-quality-r3");
+    console.log("[App] role=receiver build=2026-09-25-stability-r4");
     if (!roomId) return;
 
     setStatus("Connecting to signaling server...");
@@ -386,7 +415,7 @@ export default function Receiver() {
     const requestOfferLoop = () => {
       if (offerTimeout) clearTimeout(offerTimeout);
       if (!isSenderPresent) return;
-      signaling.send({ type: "request-offer", receiverId: signaling.clientId, sessionId: signaling.sessionId } as any);
+      signaling.send({ type: "request-offer", receiverId: signaling.clientId, sessionId: signaling.sessionId, currentMediaSessionId: mediaSessionIdRef.current ?? undefined } as any);
       retryCount++;
       if (retryCount >= 5) {
         setShowRetry(true);
@@ -402,15 +431,32 @@ export default function Receiver() {
       requestOfferLoop();
     };
 
-    signaling.onConnect = () => setStatus("Waiting for sender...");
+    signaling.onConnect = () => {
+      socketGenerationRef.current++;
+      console.log(`[Signaling] socket open (generation=${socketGenerationRef.current}) — signaling reconnect is NOT a media restart`);
+      // Only update status if no media is actively playing — don't overwrite "playing" state
+      if (!mediaSessionIdRef.current) {
+        setStatus("Waiting for sender...");
+      }
+    };
 
     const unsub = signaling.on(async (msg) => {
       if (msg.type === "room-state") {
         isSenderPresent = msg.senderPresent || false;
         setSenderConnected(isSenderPresent);
         if (isSenderPresent) {
-          setStatus("Sender present. Requesting stream...");
-          startOfferLoop();
+          // r4-stability: if already in R2 mode with active session, DON'T send request-offer.
+          // This cuts the reconnect → request-offer → media-session re-broadcast chain at the source.
+          // The idempotency check in the media-session handler is a safety net, but stopping here
+          // prevents unnecessary signaling traffic and removes any residual risk.
+          const alreadyStreamingR2 = pipelineTypeRef.current === "r2" && mediaSessionIdRef.current;
+          if (alreadyStreamingR2) {
+            console.log(`[Signaling] room-state: already in R2 mode (session=${mediaSessionIdRef.current?.slice(0,8)}) — skipping request-offer`);
+            setStatus(""); // Media is playing, clear any status
+          } else {
+            setStatus("Sender present. Requesting stream...");
+            startOfferLoop();
+          }
         } else {
           setStatus("Waiting for sender...");
           stopOfferLoop();
@@ -418,19 +464,32 @@ export default function Receiver() {
       } else if (msg.type === "sender-joined") {
         isSenderPresent = true;
         setSenderConnected(true);
-        setStatus("Sender joined. Requesting stream...");
-        mediaStream.getTracks().forEach(t => mediaStream.removeTrack(t));
-        startOfferLoop();
+        // r4-stability: same guard — don't restart offer loop if R2 media is already active
+        const alreadyStreamingR2 = pipelineTypeRef.current === "r2" && mediaSessionIdRef.current;
+        if (alreadyStreamingR2) {
+          console.log(`[Signaling] sender-joined: already in R2 mode — skipping request-offer`);
+        } else {
+          setStatus("Sender joined. Requesting stream...");
+          mediaStream.getTracks().forEach(t => mediaStream.removeTrack(t));
+          startOfferLoop();
+        }
       } else if (msg.type === "peer-left" && msg.role === "sender") {
         isSenderPresent = false;
         setSenderConnected(false);
         stopOfferLoop();
       } else if (msg.type === "cast-stopped") {
-        // Sender stopped — pause and clear video
+        // Sender stopped — pause video and CLEAR active session refs.
+        // Clearing refs is critical: if the sender casts the same file again, it will get a
+        // new mediaSessionId and must NOT be treated as a duplicate by the idempotency check.
         if (videoRef.current) {
           videoRef.current.pause();
-          // For R2, keep showing the last frame (sender may resume)
         }
+        // Clear active session identity so the next media-session is treated as genuinely new
+        mediaSessionIdRef.current = null;
+        activeMediaUrlRef.current = null;
+        activeMediaVersionRef.current = -1;
+        lastPlaybackSequenceRef.current = -1;
+        _setPipelineType(null);
         setStatus("Cast ended by sender");
       } else if (msg.type === "offer") {
         // WebRTC offer (tab/screen cast pipeline)
@@ -445,9 +504,68 @@ export default function Receiver() {
           initPeer(peer);
         }
       } else if ((msg as any).type === "media-session") {
-        // r3: R2 direct streaming pipeline
+        // r4-stability: R2 direct streaming pipeline — IDEMPOTENT handler
+        // A duplicate media-session (e.g. from socket reconnect re-broadcast) must NOT reload the video.
         const session = msg as any;
-        console.log(`[MEDIA] Received media-session: filename=${session.filename} size=${(session.size/1024/1024).toFixed(1)}MB url=${session.mediaUrl}`);
+        const incomingSessionId: string = session.mediaSessionId;
+        const incomingVersion: number = typeof session.mediaVersion === "number" ? session.mediaVersion : 0;
+        const incomingUrl: string = session.mediaUrl;
+
+        const currentSessionId = mediaSessionIdRef.current;
+        const currentUrl = activeMediaUrlRef.current;
+        const currentVersion = activeMediaVersionRef.current;
+
+        console.log(
+          `[MEDIA] Received media-session: filename=${session.filename}` +
+          ` sessionId=${incomingSessionId?.slice(0, 8)}` +
+          ` version=${incomingVersion}` +
+          ` size=${(session.size / 1024 / 1024).toFixed(1)}MB` +
+          ` socketGeneration=${socketGenerationRef.current}`
+        );
+
+        // ── IDEMPOTENCY CHECK ─────────────────────────────────────────────────────
+        // Same session + same URL = duplicate broadcast from reconnect. DO NOT reload.
+        const isSameSession = incomingSessionId && incomingSessionId === currentSessionId;
+        const isSameUrl = incomingUrl && incomingUrl === currentUrl;
+        const isStaleVersion = incomingVersion > 0 && currentVersion > 0 && incomingVersion < currentVersion;
+
+        if (isStaleVersion) {
+          console.warn(
+            `[MEDIA-RESET-TRACE] IGNORED stale media-session` +
+            ` incomingVersion=${incomingVersion} currentVersion=${currentVersion}` +
+            ` sessionId=${incomingSessionId?.slice(0, 8)}`
+          );
+          return;
+        }
+
+        if (isSameSession && isSameUrl) {
+          const video = videoRef.current;
+          console.warn(
+            `[MEDIA-RESET-TRACE] DUPLICATE media-session — skipping reload` +
+            ` sessionId=${incomingSessionId?.slice(0, 8)}` +
+            ` currentTime=${video?.currentTime?.toFixed(2) ?? 'N/A'}` +
+            ` paused=${video?.paused}` +
+            ` readyState=${video?.readyState}` +
+            ` socketGeneration=${socketGenerationRef.current}` +
+            ` reason=socket-reconnect-rebroadcast`
+          );
+          // Only report capability — do NOT touch video element
+          const cap = session.contentType ? checkCanPlay(session.contentType) : "";
+          signaling.send({ type: "decode-capability", canPlayType: cap, contentType: session.contentType } as any);
+          stopOfferLoop();
+          return;
+        }
+
+        // ── NEW MEDIA SESSION ─────────────────────────────────────────────────────
+        // This is a genuine new media load (different sessionId or URL).
+        console.log(
+          `[MEDIA-RESET-TRACE] NEW media-session loading` +
+          ` oldSession=${currentSessionId?.slice(0, 8) ?? 'none'}` +
+          ` newSession=${incomingSessionId?.slice(0, 8)}` +
+          ` oldTime=${videoRef.current?.currentTime?.toFixed(2) ?? 'N/A'}` +
+          ` socketGeneration=${socketGenerationRef.current}` +
+          ` sourceChanged=${!isSameUrl}`
+        );
 
         // Check decode capability
         const cap = session.contentType ? checkCanPlay(session.contentType) : "";
@@ -462,20 +580,35 @@ export default function Receiver() {
         signaling.send({ type: "decode-capability", canPlayType: cap, contentType: session.contentType } as any);
 
         stopOfferLoop();
-        mediaSessionIdRef.current = session.mediaSessionId;
+
+        // Update session tracking BEFORE touching the video element
+        mediaSessionIdRef.current = incomingSessionId;
+        activeMediaUrlRef.current = incomingUrl;
+        activeMediaVersionRef.current = incomingVersion;
+        lastPlaybackSequenceRef.current = -1; // reset sequence for new session
 
         const video = videoRef.current;
         if (!video) return;
 
         // Clear any WebRTC srcObject
         if (video.srcObject) {
+          console.log(`[MEDIA-TRACE] action=clearSrcObject reason=switching-to-r2 mediaSessionId=${incomingSessionId?.slice(0, 8)}`);
           video.srcObject = null;
           if (peer) { peer.close(); peer = null; }
         }
 
         // Set src to the R2 media URL (Worker serves it with Range support)
-        video.src = session.mediaUrl;
+        console.log(
+          `[MEDIA-TRACE] action=setSrc reason=new-media-session` +
+          ` mediaSessionId=${incomingSessionId?.slice(0, 8)}` +
+          ` mediaVersion=${incomingVersion}` +
+          ` currentTimeBefore=${video.currentTime.toFixed(2)}` +
+          ` socketState=${signalingRef.current?.isOpen() ? 'open' : 'closed'}` +
+          ` socketGeneration=${socketGenerationRef.current}`
+        );
+        video.src = incomingUrl;
         video.preload = "auto";
+        console.log(`[MEDIA-TRACE] action=load reason=new-media-session mediaSessionId=${incomingSessionId?.slice(0, 8)}`);
         video.load();
 
         _setPipelineType("r2");
@@ -493,7 +626,7 @@ export default function Receiver() {
 
         setMediaInfo({ filename: session.filename, resolution: resLabel || "Video", canPlayType: cap });
         setStatus("");
-        console.log(`[RECEIVER] readyState=${video.readyState} src=${session.mediaUrl.slice(-40)}`);
+        console.log(`[RECEIVER] readyState=${video.readyState} src=...(${incomingUrl.slice(-40)})`);
       } else if ((msg as any).type === "playback-control") {
         // r3: sender or another receiver sent a control
         const ctrl = msg as any;
@@ -641,9 +774,17 @@ export default function Receiver() {
     setIsBuffering(false);
     const video = videoRef.current;
     if (!video || !hasMedia) return;
-    // Auto-start for R2 media
-    if (pipelineType === "r2" && video.paused && video.currentTime === 0) {
-      safePlay();
+    if (pipelineType === "r2" && video.paused) {
+      if (video.currentTime === 0) {
+        // Brand-new load at the start — auto-start
+        console.log(`[MEDIA-TRACE] action=play reason=initial-canplay mediaSessionId=${mediaSessionIdRef.current?.slice(0,8)} socketGeneration=${socketGenerationRef.current}`);
+        safePlay();
+      } else if (wasPlayingBeforeStallRef.current) {
+        // Buffering recovery: was playing, stalled, now ready again — resume
+        console.log(`[MEDIA-TRACE] action=play reason=buffering-recovery currentTime=${video.currentTime.toFixed(2)} mediaSessionId=${mediaSessionIdRef.current?.slice(0,8)}`);
+        safePlay();
+      }
+      // If paused by user choice (wasPlayingBeforeStallRef.current === false), do NOT auto-resume
     }
     if (startupTimeRef.current) {
       console.log(`[RECEIVER] canplay startupTime=${Date.now() - startupTimeRef.current}ms`);
@@ -654,7 +795,9 @@ export default function Receiver() {
   const onWaiting = useCallback(() => {
     setIsBuffering(true);
     waitingCountRef.current++;
-    console.warn(`[RECEIVER] waiting event — BUFFERING (count=${waitingCountRef.current}) bufferedAhead=${getBufferedAhead(videoRef.current!).toFixed(1)}s`);
+    // Record whether we were playing so canplay knows whether to auto-resume
+    wasPlayingBeforeStallRef.current = !(videoRef.current?.paused ?? true);
+    console.warn(`[RECEIVER] waiting event — BUFFERING (count=${waitingCountRef.current}) bufferedAhead=${getBufferedAhead(videoRef.current!).toFixed(1)}s wasPlaying=${wasPlayingBeforeStallRef.current}`);
   }, []);
 
   const onStalled = useCallback(() => {
@@ -665,6 +808,7 @@ export default function Receiver() {
   const onPlaying = useCallback(() => {
     setIsBuffering(false);
     setIsPlaying(true);
+    wasPlayingBeforeStallRef.current = true; // Track that we are actively playing
     console.log(`[RECEIVER] playing event readyState=${videoRef.current?.readyState}`);
   }, []);
 
@@ -697,8 +841,9 @@ export default function Receiver() {
               autoPlay
               playsInline
               className="w-full h-full object-contain"
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
+              onPlay={() => { setIsPlaying(true); wasPlayingBeforeStallRef.current = true; }}
+              onPause={() => { setIsPlaying(false); wasPlayingBeforeStallRef.current = false; }}
+              onEnded={() => { setIsPlaying(false); wasPlayingBeforeStallRef.current = false; console.log(`[RECEIVER] video ended mediaSessionId=${mediaSessionIdRef.current?.slice(0,8)}`); }}
               onTimeUpdate={onTimeUpdate}
               onLoadedMetadata={onLoadedMetadata}
               onWaiting={onWaiting}
@@ -842,6 +987,9 @@ export default function Receiver() {
                             <div>readyState: {videoRef.current?.readyState ?? "?"}</div>
                             <div>waitingCount: {waitingCountRef.current}</div>
                             <div>stallCount: {stallCountRef.current}</div>
+                            <div className="text-emerald-400">session: {mediaSessionIdRef.current?.slice(0,8) ?? "none"}</div>
+                            <div className="text-blue-400">socketGen: {socketGenerationRef.current}</div>
+                            <div className="text-yellow-400">mediaVer: {activeMediaVersionRef.current}</div>
                           </div>
                           <p className="text-xs text-muted-foreground uppercase tracking-widest font-semibold px-3 py-2 border-b border-white/10 mb-1 mt-2">Quality</p>
                           <div className="px-3 py-2 text-xs font-mono text-white/60 space-y-1">
@@ -910,6 +1058,9 @@ export default function Receiver() {
             <div className="relative inline-block mb-8 z-10 w-full">
               <div className="absolute inset-0 bg-blue-500/20 blur-2xl rounded-full pointer-events-none"></div>
               <input
+                id="receiver-room-code"
+                name="roomCode"
+                aria-label="Room Code"
                 type="text"
                 value={inputCode}
                 onChange={(e) => setInputCode(e.target.value.toUpperCase())}

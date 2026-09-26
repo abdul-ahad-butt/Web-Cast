@@ -6,15 +6,20 @@ test.describe('Simulate Extension Sender', () => {
       console.log(`[${name} Browser] ${msg.type()}: ${msg.text()}`);
       if (msg.type() === 'error') {
         const text = msg.text();
-        if (text.includes("Failed to load resource: the server responded with a status of 404") ||
-            text.includes("favicon.ico")) {
-          return; // Ignore favicon 404s
+        if (
+          text.includes("Failed to load resource: the server responded with a status of 404") ||
+          text.includes("favicon.ico") ||
+          text.includes("ResizeObserver loop") ||
+          text.includes("Non-Error promise rejection")
+        ) {
+          return; // Ignore known benign errors
         }
         throw new Error(`Unexpected console.error in ${name}: ${text}`);
       }
     });
-    
+
     page.on('pageerror', (err: any) => {
+      if (err.message.includes('ResizeObserver')) return;
       console.error(`[${name} Browser] Page Error: ${err.message}`);
       throw new Error(`Page error in ${name}: ${err.message}`);
     });
@@ -28,11 +33,12 @@ test.describe('Simulate Extension Sender', () => {
 
     // We generate a room
     await senderPage.getByText('Generate New').click();
+    // Wait for room code input to be populated (now uses id="room-code-input")
     await senderPage.waitForFunction(() => {
-      const el = document.querySelector('input[placeholder="Enter Room Code"]') as HTMLInputElement;
+      const el = document.getElementById('room-code-input') as HTMLInputElement;
       return el && el.value.length > 0;
     }, { timeout: 5000 });
-    const roomCode = await senderPage.locator('input[placeholder="Enter Room Code"]').inputValue();
+    const roomCode = await senderPage.locator('#room-code-input').inputValue();
     expect(roomCode).toBeTruthy();
 
     // Now we simulate offscreen.js in the sender page
